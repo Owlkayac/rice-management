@@ -17,6 +17,25 @@ h1 {
   text-align: center;
 }
 
+.view-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  border-bottom: 2px solid #d7e3d7;
+}
+
+.view-tab {
+  flex: 1;
+  background: #e8eee8;
+  color: #24502c;
+  border-radius: 8px 8px 0 0;
+}
+
+.view-tab.active {
+  background: #2f6b3b;
+  color: white;
+}
+
 .form,
 .filters {
   display: grid;
@@ -62,7 +81,8 @@ button {
   background: #777;
 }
 
-.table-wrapper {
+.table-wrapper,
+.dashboard-table-wrapper {
   overflow-x: auto;
 }
 
@@ -70,6 +90,10 @@ table {
   width: 100%;
   border-collapse: collapse;
   min-width: 560px;
+}
+
+.dashboard-table {
+  min-width: 980px;
 }
 
 th,
@@ -81,6 +105,49 @@ td {
 
 th {
   background: #eee;
+}
+
+.dashboard-table th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.dashboard-table tbody th {
+  background: #f0f7f0;
+}
+
+.annual-total,
+.grand-total-row th,
+.grand-total-row td {
+  font-weight: bold;
+  background: #fff3cd;
+}
+
+.grand-total-row th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.total-card {
+  text-align: center;
+  background: #eaf6ea;
+  border: 2px solid #8fbd91;
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 28px;
+}
+
+.total-card p {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: #24502c;
+}
+
+.total-card strong {
+  color: #1e5d2b;
+  font-size: 36px;
 }
 
 .action-cell {
@@ -121,5 +188,14 @@ th {
 
   .form-actions {
     flex-direction: column;
+  }
+
+  .view-tab {
+    font-size: 16px;
+    padding: 10px 6px;
+  }
+
+  .total-card strong {
+    font-size: 30px;
   }
 }

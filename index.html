@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>発送請求額計算</title>
+
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #f5f5f5;
+  padding: 20px;
+}
+
+.container {
+  max-width: 500px;
+  margin: auto;
+  background: white;
+  padding: 25px;
+  border-radius: 20px;
+}
+
+h1 {
+  text-align: center;
+}
+
+.item {
+  margin: 20px 0;
+}
+
+label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+
+input {
+  width: 80%;
+  padding: 14px;
+  font-size: 20px;
+  box-sizing: border-box;
+  text-align: right;
+}
+
+button {
+  width: 100%;
+  padding: 16px;
+  font-size: 18px;
+  margin-top: 15px;
+  border: none;
+  border-radius: 10px;
+  background: #222;
+  color: white;
+}
+
+.clear {
+  background: #ddd;
+  color: black;
+}
+
+.result {
+  margin-top: 25px;
+  padding: 20px;
+  background: #eee;
+  border-radius: 15px;
+  text-align: center;
+}
+
+.total {
+  font-size: 32px;
+  font-weight: bold;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>発送請求額計算</h1>
+
+<div class="item">
+<label>商品A　1,998円/kg（税込）</label>
+<input id="a" type="number" min="0" step="0.01" placeholder="0">
+kg
+</div>
+
+<div class="item">
+<label>商品B　1,566円/kg（税込）</label>
+<input id="b" type="number" min="0" step="0.01" placeholder="0">
+kg
+</div>
+
+<div class="item">
+<label>商品C　932.04円/kg（税込）</label>
+<input id="c" type="number" min="0" step="0.01" placeholder="0">
+kg
+</div>
+
+<button onclick="calculate()">計算する</button>
+
+<button class="clear" onclick="clearAll()">クリア</button>
+
+<div class="result">
+<div>請求額（税込）</div>
+<div class="total" id="total">0円</div>
+</div>
+
+</div>
+
+<script>
+
+function calculate() {
+
+  const a = Number(document.getElementById("a").value) || 0;
+  const b = Number(document.getElementById("b").value) || 0;
+  const c = Number(document.getElementById("c").value) || 0;
+
+  const total =
+    a * 1998 +
+    b * 1566 +
+    c * 932.04;
+
+  document.getElementById("total").textContent =
+    Math.round(total).toLocaleString() + "円";
+}
+
+function clearAll() {
+
+  document.getElementById("a").value = "";
+  document.getElementById("b").value = "";
+  document.getElementById("c").value = "";
+
+  document.getElementById("total").textContent = "0円";
+}
+
+</script>
+
+</body>
+</html>

@@ -17,10 +17,19 @@ h1 {
   text-align: center;
 }
 
-.form {
+.form,
+.filters {
   display: grid;
   gap: 10px;
   margin-bottom: 30px;
+}
+
+.filters {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  padding: 15px;
+  background: #f0f7f0;
+  border-radius: 8px;
 }
 
 input,
@@ -37,11 +46,30 @@ button {
   border-radius: 8px;
   background: #333;
   color: white;
+  min-height: 46px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.form-actions button {
+  flex: 1;
+}
+
+.cancel-button {
+  background: #777;
+}
+
+.table-wrapper {
+  overflow-x: auto;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 560px;
 }
 
 th,
@@ -55,12 +83,43 @@ th {
   background: #eee;
 }
 
+.action-cell {
+  white-space: nowrap;
+}
+
+.edit-button,
+.delete-button {
+  padding: 8px 12px;
+  margin: 2px;
+}
+
+.edit-button {
+  background: #1769aa;
+}
+
 .delete-button {
   background: #c00;
-  padding: 6px 10px;
 }
 
 .summary-item {
   padding: 10px;
   border-bottom: 1px solid #ddd;
+}
+
+@media (max-width: 600px) {
+  body {
+    padding: 10px;
+  }
+
+  .container {
+    padding: 15px;
+  }
+
+  .filters {
+    grid-template-columns: 1fr;
+  }
+
+  .form-actions {
+    flex-direction: column;
+  }
 }

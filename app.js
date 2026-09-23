@@ -1,9 +1,26 @@
+// 残り在庫がこの値未満になったら「在庫少」と表示します。
+const LOW_STOCK_THRESHOLD = 100;
+const INVENTORY_STORAGE_KEY = "inventory";
+
 let reservations =
   JSON.parse(localStorage.getItem("reservations")) || [];
 
-let editingIndex = null;
 const varieties = ["A", "B", "C", "D", "E", "F"];
 const months = Array.from({ length: 12 }, (_, index) => `${index + 1}月`);
+let editingIndex = null;
+
+// 在庫は予約データとは別のキーで管理し、未登録の品種は0kgにします。
+let inventory = loadInventory();
+
+function loadInventory() {
+  const saved = JSON.parse(localStorage.getItem(INVENTORY_STORAGE_KEY)) || {};
+  const values = {};
+  varieties.forEach(variety => {
+    const value = Number(saved[variety]);
+    values[variety] = Number.isFinite(value) && value >= 0 ? value : 0;
+  });
+  return values;
+}
 
 function formatKg(value) {
   const rounded = Math.round(Number(value) * 10) / 10;
@@ -24,21 +41,16 @@ function validateReservation(reservation) {
     alert("名前を入力してください");
     return false;
   }
-
   if (!reservation.kg || reservation.kg <= 0) {
     alert("kgを入力してください");
     return false;
   }
-
   return true;
 }
 
 function addReservation() {
   const reservation = getFormValues();
-
-  if (!validateReservation(reservation)) {
-    return;
-  }
+  if (!validateReservation(reservation)) return;
 
   if (editingIndex === null) {
     reservations.push(reservation);
@@ -55,7 +67,6 @@ function addReservation() {
 function editReservation(index) {
   const reservation = reservations[index];
   editingIndex = index;
-
   document.getElementById("variety").value = reservation.variety;
   document.getElementById("month").value = reservation.month;
   document.getElementById("name").value = reservation.name;
@@ -79,9 +90,7 @@ function clearForm() {
 }
 
 function deleteReservation(index) {
-  if (!confirm("この予約を削除しますか？")) {
-    return;
-  }
+  if (!confirm("この予約を削除しますか？")) return;
 
   reservations.splice(index, 1);
   if (editingIndex === index) {
@@ -89,7 +98,6 @@ function deleteReservation(index) {
   } else if (editingIndex !== null && editingIndex > index) {
     editingIndex -= 1;
   }
-
   saveData();
   displayReservations();
 }
@@ -98,31 +106,56 @@ function saveData() {
   localStorage.setItem("reservations", JSON.stringify(reservations));
 }
 
+function saveInventory(variety, value) {
+  inventory[variety] = Math.max(0, Number(value) || 0);
+  localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventory));
+  displayInventory();
+  displayDashboardTotals();
+}
+
+function getReservedTotals() {
+  const totals = {};
+  varieties.forEach(variety => { totals[variety] = 0; });
+  reservations.forEach(reservation => {
+    if (totals[reservation.variety] !== undefined) {
+      totals[reservation.variety] += Number(reservation.kg) || 0;
+    }
+  });
+  return totals;
+}
+
+function getInventoryTotals() {
+  const reserved = getReservedTotals();
+  let stockTotal = 0;
+  let reservedTotal = 0;
+  varieties.forEach(variety => {
+    stockTotal += inventory[variety];
+    reservedTotal += reserved[variety];
+  });
+  return { stockTotal, reservedTotal, remainingTotal: stockTotal - reservedTotal };
+}
+
+function getStockStatus(remaining) {
+  if (remaining < 0) return "在庫不足";
+  if (remaining < LOW_STOCK_THRESHOLD) return "在庫少";
+  return "";
+}
+
 function displayReservations() {
   const list = document.getElementById("reservationList");
   const searchName = document.getElementById("searchName").value.trim();
   const filterVariety = document.getElementById("filterVariety").value;
   const filterMonth = document.getElementById("filterMonth").value;
-
   list.innerHTML = "";
 
   reservations.forEach((reservation, index) => {
     const matchesName = !searchName || reservation.name.includes(searchName);
     const matchesVariety = !filterVariety || reservation.variety === filterVariety;
     const matchesMonth = !filterMonth || reservation.month === filterMonth;
-
-    if (!matchesName || !matchesVariety || !matchesMonth) {
-      return;
-    }
+    if (!matchesName || !matchesVariety || !matchesMonth) return;
 
     const row = document.createElement("tr");
-    row.innerHTML = `
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td class="action-cell"></td>
-    `;
+    row.innerHTML = "<td></td><td></td><td></td><td></td><td class=\"action-cell\"></td>";
     row.children[0].textContent = reservation.variety;
     row.children[1].textContent = reservation.month;
     row.children[2].textContent = reservation.name;
@@ -135,36 +168,26 @@ function displayReservations() {
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "delete-button";
-    deleteButton.textContent = "��除";
+    deleteButton.textContent = "削除";
     deleteButton.addEventListener("click", () => deleteReservation(index));
-
     row.children[4].append(editButton, deleteButton);
     list.appendChild(row);
   });
 
   displaySummary();
   displayDashboard();
+  displayInventory();
 }
 
 function displaySummary() {
   const summary = document.getElementById("summary");
   summary.innerHTML = "";
   const totals = {};
-
   reservations.forEach(reservation => {
     const key = `${reservation.variety}_${reservation.month}`;
-
-    if (!totals[key]) {
-      totals[key] = {
-        variety: reservation.variety,
-        month: reservation.month,
-        kg: 0
-      };
-    }
-
-    totals[key].kg += Number(reservation.kg);
+    if (!totals[key]) totals[key] = { variety: reservation.variety, month: reservation.month, kg: 0 };
+    totals[key].kg += Number(reservation.kg) || 0;
   });
-
   Object.values(totals).forEach(total => {
     const div = document.createElement("div");
     div.className = "summary-item";
@@ -177,22 +200,16 @@ function displayDashboard() {
   const totals = {};
   varieties.forEach(variety => {
     totals[variety] = {};
-    months.forEach(month => {
-      totals[variety][month] = 0;
-    });
+    months.forEach(month => { totals[variety][month] = 0; });
   });
-
   reservations.forEach(reservation => {
     if (totals[reservation.variety] && months.includes(reservation.month)) {
-      totals[reservation.variety][reservation.month] += Number(reservation.kg);
+      totals[reservation.variety][reservation.month] += Number(reservation.kg) || 0;
     }
   });
 
   const columnTotals = {};
-  months.forEach(month => {
-    columnTotals[month] = 0;
-  });
-
+  months.forEach(month => { columnTotals[month] = 0; });
   const body = document.getElementById("dashboardBody");
   body.innerHTML = "";
   let grandTotal = 0;
@@ -203,7 +220,6 @@ function displayDashboard() {
     label.scope = "row";
     label.textContent = variety;
     row.appendChild(label);
-
     let varietyTotal = 0;
     months.forEach(month => {
       const value = totals[variety][month];
@@ -213,7 +229,6 @@ function displayDashboard() {
       cell.textContent = formatKg(value);
       row.appendChild(cell);
     });
-
     grandTotal += varietyTotal;
     const annualCell = document.createElement("td");
     annualCell.className = "annual-total";
@@ -228,28 +243,62 @@ function displayDashboard() {
   totalLabel.scope = "row";
   totalLabel.textContent = "全体合計";
   totalRow.appendChild(totalLabel);
-
   months.forEach(month => {
     const cell = document.createElement("td");
     cell.textContent = formatKg(columnTotals[month]);
     totalRow.appendChild(cell);
   });
-
   const grandCell = document.createElement("td");
   grandCell.textContent = formatKg(grandTotal);
   totalRow.appendChild(grandCell);
   body.appendChild(totalRow);
-
   document.getElementById("dashboardTotal").textContent = formatKg(grandTotal);
+  displayDashboardTotals();
+}
+
+function displayDashboardTotals() {
+  const totals = getInventoryTotals();
+  document.getElementById("dashboardInventoryTotal").textContent = formatKg(totals.stockTotal);
+  document.getElementById("dashboardRemainingTotal").textContent = formatKg(totals.remainingTotal);
+}
+
+function displayInventory() {
+  const body = document.getElementById("inventoryBody");
+  if (!body) return;
+  const reserved = getReservedTotals();
+  body.innerHTML = "";
+  let stockTotal = 0;
+  let reservedTotal = 0;
+
+  varieties.forEach(variety => {
+    const remaining = inventory[variety] - reserved[variety];
+    stockTotal += inventory[variety];
+    reservedTotal += reserved[variety];
+    const row = document.createElement("tr");
+    row.className = remaining < 0 ? "stock-shortage" : remaining < LOW_STOCK_THRESHOLD ? "stock-low" : "";
+    row.innerHTML = `<th scope="row">${variety}</th><td></td><td>${formatKg(reserved[variety])}</td><td>${formatKg(remaining)}</td><td class="stock-status"></td>`;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.step = "0.1";
+    input.value = inventory[variety];
+    input.setAttribute("aria-label", `${variety}の在庫量（kg）`);
+    input.addEventListener("change", event => saveInventory(variety, event.target.value));
+    row.children[1].appendChild(input);
+    row.children[4].textContent = getStockStatus(remaining);
+    body.appendChild(row);
+  });
+
+  const totalRemaining = stockTotal - reservedTotal;
+  const totalRow = document.createElement("tr");
+  totalRow.className = "grand-total-row";
+  totalRow.innerHTML = `<th scope="row">全体</th><td>${formatKg(stockTotal)}</td><td>${formatKg(reservedTotal)}</td><td>${formatKg(totalRemaining)}</td><td class="stock-status">${getStockStatus(totalRemaining)}</td>`;
+  body.appendChild(totalRow);
 }
 
 function switchView(viewId) {
-  document.querySelectorAll(".view-panel").forEach(panel => {
-    panel.hidden = panel.id !== viewId;
-  });
-  document.querySelectorAll(".view-tab").forEach(tab => {
-    tab.classList.toggle("active", tab.dataset.view === viewId);
-  });
+  document.querySelectorAll(".view-panel").forEach(panel => { panel.hidden = panel.id !== viewId; });
+  document.querySelectorAll(".view-tab").forEach(tab => { tab.classList.toggle("active", tab.dataset.view === viewId); });
 }
 
 document.getElementById("searchName").addEventListener("input", displayReservations);

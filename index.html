@@ -18,6 +18,7 @@
     <nav class="view-tabs" aria-label="表示切り替え">
       <button class="view-tab active" type="button" data-view="reservationsView">予約登録・一覧</button>
       <button class="view-tab" type="button" data-view="dashboardView">ダッシュボード</button>
+      <button class="view-tab" type="button" data-view="inventoryView">在庫管理</button>
     </nav>
 
     <main id="reservationsView" class="view-panel">
@@ -119,10 +120,20 @@
     </main>
 
     <main id="dashboardView" class="view-panel" hidden>
-      <section class="total-card" aria-live="polite">
-        <p>現在の総予約量</p>
-        <strong id="dashboardTotal">0kg</strong>
-      </section>
+      <div class="dashboard-cards">
+        <section class="total-card" aria-live="polite">
+          <p>現在の総予約量</p>
+          <strong id="dashboardTotal">0kg</strong>
+        </section>
+        <section class="total-card inventory-card" aria-live="polite">
+          <p>総在庫量</p>
+          <strong id="dashboardInventoryTotal">0kg</strong>
+        </section>
+        <section class="total-card remaining-card" aria-live="polite">
+          <p>総残り在庫</p>
+          <strong id="dashboardRemainingTotal">0kg</strong>
+        </section>
+      </div>
 
       <h2>品種別・月別予約量</h2>
       <div class="dashboard-table-wrapper">
@@ -136,6 +147,25 @@
             </tr>
           </thead>
           <tbody id="dashboardBody"></tbody>
+        </table>
+      </div>
+    </main>
+
+    <main id="inventoryView" class="view-panel" hidden>
+      <h2>在庫管理</h2>
+      <p class="inventory-help">品種ごとの在庫量を入力してください。変更は自動的に保存されます。</p>
+      <div class="inventory-table-wrapper">
+        <table class="inventory-table">
+          <thead>
+            <tr>
+              <th>品種</th>
+              <th>在庫量（kg）</th>
+              <th>予約済み</th>
+              <th>残り在庫</th>
+              <th>状態</th>
+            </tr>
+          </thead>
+          <tbody id="inventoryBody"></tbody>
         </table>
       </div>
     </main>

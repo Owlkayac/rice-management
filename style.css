@@ -1,1 +1,266 @@
-body{font-family:sans-serif;background:#f5f5f5;margin:0;padding:20px;color:#222}.container{max-width:1200px;margin:auto;background:#fff;padding:20px;border-radius:12px}h1{text-align:center}.view-tabs{display:flex;gap:8px;margin-bottom:24px;border-bottom:2px solid #d7e3d7;overflow-x:auto}.view-tab{flex:1;min-width:120px;background:#e8eee8;color:#24502c;border-radius:8px 8px 0 0}.view-tab.active{background:#2f6b3b;color:#fff}.form,.filters{display:grid;gap:10px;margin-bottom:30px}.filters{grid-template-columns:auto 1fr;align-items:center;padding:15px;background:#f0f7f0;border-radius:8px}input,select,textarea,button{font-size:18px;padding:12px;box-sizing:border-box}button{cursor:pointer;border:0;border-radius:8px;background:#333;color:#fff;min-height:46px}.form-actions{display:flex;gap:10px}.form-actions button{flex:1}.cancel-button{background:#777}.table-wrapper,.dashboard-table-wrapper{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:650px}.dashboard-table,.inventory-table,.shipment-summary-table{min-width:980px}th,td{border:1px solid #ddd;padding:10px;text-align:center;vertical-align:top}th{background:#eee}.dashboard-table tbody th,.inventory-table tbody th,.shipment-summary-table tbody th{background:#f0f7f0}.grand-total-row th,.grand-total-row td{font-weight:bold;background:#fff3cd}.total-card{ text-align:center;background:#eaf6ea;border:2px solid #8fbd91;border-radius:12px;padding:18px}.total-card p{margin:0 0 8px;font-size:18px;color:#24502c}.total-card strong{color:#1e5d2b;font-size:28px}.dashboard-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:28px}.inventory-card{background:#eef5ff;border-color:#9abce5}.remaining-card{background:#fff8df;border-color:#e1c36a}.action-cell{white-space:nowrap}.edit-button,.delete-button,.detail-button{padding:8px 12px;margin:2px}.edit-button{background:#1769aa}.delete-button{background:#c00}.detail-button{background:#2f6b3b}.summary-item{padding:10px;border-bottom:1px solid #ddd}.inventory-help,small{color:#555}.stock-low td,.stock-low th{background:#fff3cd}.stock-shortage td,.stock-shortage th{background:#ffdede;color:#a00;font-weight:bold}.customer-detail{margin-top:24px;padding:20px;background:#f0f7f0;border:2px solid #b7d5b9;border-radius:12px}.detail-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.detail-card{background:#fff;border-radius:8px;padding:14px}.detail-card h3{margin-top:0}.detail-card ul{margin-bottom:0}@media(max-width:600px){body{padding:10px}.container{padding:15px}.filters{grid-template-columns:1fr}.form-actions{flex-direction:column}.dashboard-cards{grid-template-columns:1fr 1fr}.detail-grid{grid-template-columns:1fr}.customer-detail{padding:14px}}
+body {
+  font-family: sans-serif;
+  background: #f5f5f5;
+  margin: 0;
+  padding: 20px;
+  color: #222;
+}
+
+.container {
+  max-width: 1200px;
+  margin: auto;
+  background: #fff;
+  padding: 20px;
+  border-radius: 12px;
+}
+
+h1 {
+  text-align: center;
+}
+
+.view-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  border-bottom: 2px solid #d7e3d7;
+  overflow-x: auto;
+}
+
+.view-tab {
+  flex: 1;
+  min-width: 120px;
+  background: #e8eee8;
+  color: #24502c;
+  border-radius: 8px 8px 0 0;
+}
+
+.view-tab.active {
+  background: #2f6b3b;
+  color: #fff;
+}
+
+.form,
+.filters {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 30px;
+}
+
+.filters {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  padding: 15px;
+  background: #f0f7f0;
+  border-radius: 8px;
+}
+
+input,
+select,
+textarea,
+button {
+  font-size: 18px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  border-radius: 8px;
+  background: #333;
+  color: #fff;
+  min-height: 46px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.form-actions button {
+  flex: 1;
+}
+
+.cancel-button {
+  background: #777;
+}
+
+.table-wrapper,
+.dashboard-table-wrapper {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 650px;
+}
+
+.dashboard-table,
+.inventory-table,
+.shipment-summary-table {
+  min-width: 980px;
+}
+
+th,
+td {
+  border: 1px solid #ddd;
+  padding: 10px;
+  text-align: center;
+  vertical-align: top;
+}
+
+th {
+  background: #eee;
+}
+
+.dashboard-table tbody th,
+.inventory-table tbody th,
+.shipment-summary-table tbody th {
+  background: #f0f7f0;
+}
+
+.grand-total-row th,
+.grand-total-row td {
+  font-weight: bold;
+  background: #fff3cd;
+}
+
+.total-card {
+  text-align: center;
+  background: #eaf6ea;
+  border: 2px solid #8fbd91;
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.total-card p {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: #24502c;
+}
+
+.total-card strong {
+  color: #1e5d2b;
+  font-size: 28px;
+}
+
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(3,1fr);
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.inventory-card {
+  background: #eef5ff;
+  border-color: #9abce5;
+}
+
+.remaining-card {
+  background: #fff8df;
+  border-color: #e1c36a;
+}
+
+.action-cell {
+  white-space: nowrap;
+}
+
+.edit-button,
+.delete-button,
+.detail-button {
+  padding: 8px 12px;
+  margin: 2px;
+}
+
+.edit-button {
+  background: #1769aa;
+}
+
+.delete-button {
+  background: #c00;
+}
+
+.detail-button {
+  background: #2f6b3b;
+}
+
+.summary-item {
+  padding: 10px;
+  border-bottom: 1px solid #ddd;
+}
+
+.inventory-help,
+small {
+  color: #555;
+}
+
+.stock-low td,
+.stock-low th {
+  background: #fff3cd;
+}
+
+.stock-shortage td,
+.stock-shortage th {
+  background: #ffdede;
+  color: #a00;
+  font-weight: bold;
+}
+
+.customer-detail {
+  margin-top: 24px;
+  padding: 20px;
+  background: #f0f7f0;
+  border: 2px solid #b7d5b9;
+  border-radius: 12px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2,1fr);
+  gap: 12px;
+}
+
+.detail-card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.detail-card h3 {
+  margin-top: 0;
+}
+
+.detail-card ul {
+  margin-bottom: 0;
+}
+
+@media (max-width: 600px) {
+  body {
+    padding: 10px;
+  }
+
+  .container {
+    padding: 15px;
+  }
+
+  .filters {
+    grid-template-columns: 1fr;
+  }
+
+  .form-actions {
+    flex-direction: column;
+  }
+
+  .dashboard-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-detail {
+    padding: 14px;
+  }
+}

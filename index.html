@@ -53,6 +53,6 @@
 
   <main id="customersView" class="view-panel" hidden><h2>顧客管理</h2><div class="form customer-form"><label for="customerName">顧客名（必須）</label><input id="customerName" type="text" placeholder="例：山田太郎"><label for="customerPhone">電話番号</label><input id="customerPhone" type="tel" placeholder="例：090-0000-0000"><label for="customerAddress">住所</label><input id="customerAddress" type="text" placeholder="例：東京都"><label for="customerMemo">メモ</label><input id="customerMemo" type="text"><div class="form-actions"><button id="customerSubmitButton" onclick="saveCustomer()">顧客を登録</button><button id="cancelCustomerEditButton" class="cancel-button" hidden onclick="cancelCustomerEdit()">キャンセル</button></div></div><div class="filters"><label for="customerSearch">顧客名検索</label><input id="customerSearch" type="search"><label for="customerSort">並び順</label><select id="customerSort"><option value="name">顧客名</option><option value="recent">登録順</option><option value="reservations">予約量順</option></select></div><div class="table-wrapper"><table><thead><tr><th>顧客名</th><th>電話番号</th><th>住所</th><th>メモ</th><th>予約合計</th><th>出荷済み</th><th>未出荷</th><th>詳細</th><th>編集</th><th>削除</th></tr></thead><tbody id="customerList"></tbody></table></div><section id="customerDetail" hidden></section></main>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 <script src="tab-fix.js"></script>
 </body></html>

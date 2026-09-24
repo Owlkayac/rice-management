@@ -28,7 +28,7 @@
           </select>
           <small>新規顧客は「顧客管理」から登録してください。</small>
           <label for="name">名前（既存データ用）</label>
-          <input id="name" type="text" placeholder="顧客を選択してく��さい">
+          <input id="name" type="text" placeholder="顧客を選択してください">
           <label for="kg">重量（kg）</label>
           <input id="kg" type="number" min="0.1" step="0.1" placeholder="例：5">
           <div class="form-actions">
@@ -101,8 +101,18 @@
             <thead>
               <tr>
                 <th>品種＼月</th>
-                <th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th><th>6月</th>
-                <th>7月</th><th>8月</th><th>9月</th><th>10月</th><th>11月</th><th>12月</th>
+                <th>1月</th>
+                <th>2月</th>
+                <th>3月</th>
+                <th>4月</th>
+                <th>5月</th>
+                <th>6月</th>
+                <th>7月</th>
+                <th>8月</th>
+                <th>9月</th>
+                <th>10月</th>
+                <th>11月</th>
+                <th>12月</th>
               </tr>
             </thead>
             <tbody id="dashboardTableBody"></tbody>
@@ -115,7 +125,15 @@
         <p class="inventory-help">品種ごとの在庫量を入力してください。</p>
         <div class="table-wrapper">
           <table class="inventory-table">
-            <thead><tr><th>品種</th><th>在庫量</th><th>予約量</th><th>残り在庫</th><th>状態</th></tr></thead>
+            <thead>
+              <tr>
+                <th>品種</th>
+                <th>在庫量</th>
+                <th>予約量</th>
+                <th>残り在庫</th>
+                <th>状態</th>
+              </tr>
+            </thead>
             <tbody id="inventoryList"></tbody>
           </table>
         </div>
@@ -124,43 +142,96 @@
       <main id="shipmentsView" class="view-panel" hidden>
         <h2>出荷登録</h2>
         <div class="form" id="shipmentForm">
-          <label for="shipmentVariety">品種</label><select id="shipmentVariety"></select>
-          <label for="shipmentDate">出荷日</label><input id="shipmentDate" type="date">
+          <label for="shipmentVariety">品種</label>
+          <select id="shipmentVariety"></select>
+          <label for="shipmentDate">出荷日</label>
+          <input id="shipmentDate" type="date">
           <label for="shipmentCustomerSelect">顧客</label>
-          <select id="shipmentCustomerSelect"><option value="">顧客管理から登録してください</option></select>
-          <label for="shipmentName">名前（既存データ用）</label><input id="shipmentName" type="text" placeholder="顧客を選択してください">
-          <label for="shipmentKg">重量（kg）</label><input id="shipmentKg" type="number" min="0.1" step="0.1" placeholder="例：20">
-          <label for="shipmentMemo">メモ</label><input id="shipmentMemo" type="text">
+          <select id="shipmentCustomerSelect">
+            <option value="">顧客管理から登録してください</option>
+          </select>
+          <label for="shipmentName">名前（既存データ用）</label>
+          <input id="shipmentName" type="text" placeholder="顧客を選択してください">
+          <label for="shipmentKg">重量（kg）</label>
+          <input id="shipmentKg" type="number" min="0.1" step="0.1" placeholder="例：20">
+          <label for="shipmentMemo">メモ</label>
+          <input id="shipmentMemo" type="text">
           <div class="form-actions">
             <button id="shipmentSubmitButton" onclick="addShipment()">出荷を登録</button>
             <button id="cancelShipmentEditButton" class="cancel-button" hidden onclick="cancelShipmentEdit()">キャンセル</button>
           </div>
         </div>
         <h2>出荷一覧</h2>
-        <div class="table-wrapper"><table><thead><tr><th>出荷日</th><th>品種</th><th>顧客</th><th>kg</th><th>メモ</th><th>操作</th></tr></thead><tbody id="shipmentList"></tbody></table></div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>出荷日</th>
+                <th>品種</th>
+                <th>顧客</th>
+                <th>kg</th>
+                <th>メモ</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="shipmentList"></tbody>
+          </table>
+        </div>
         <h2>出荷集計</h2>
-        <div class="table-wrapper"><table><tbody id="shipmentSummaryBody"></tbody></table></div>
+        <div class="table-wrapper">
+          <table>
+            <tbody id="shipmentSummaryBody"></tbody>
+          </table>
+        </div>
       </main>
 
       <main id="customersView" class="view-panel" hidden>
         <h2>顧客管理</h2>
         <div class="form customer-form">
-          <label for="customerName">顧客名（必須）</label><input id="customerName" type="text" placeholder="例：山田太郎">
-          <label for="customerFurigana">ふりがな（必須）</label><input id="customerFurigana" type="text" placeholder="例：やまだたろう">
-          <label for="customerPhone">電話番号</label><input id="customerPhone" type="tel" placeholder="例：090-0000-0000">
-          <label for="customerAddress">住所</label><input id="customerAddress" type="text" placeholder="例：東京都">
-          <label for="customerMemo">メモ</label><input id="customerMemo" type="text">
+          <label for="customerName">顧客名（必須）</label>
+          <input id="customerName" type="text" placeholder="例：山田太郎">
+          <label for="customerFurigana">ふりがな（必須）</label>
+          <input id="customerFurigana" type="text" placeholder="例：やまだたろう">
+          <label for="customerPhone">電話番号</label>
+          <input id="customerPhone" type="tel" placeholder="例：090-0000-0000">
+          <label for="customerAddress">住所</label>
+          <input id="customerAddress" type="text" placeholder="例：東京都">
+          <label for="customerMemo">メモ</label>
+          <input id="customerMemo" type="text">
           <div class="form-actions">
             <button id="customerSubmitButton" onclick="saveCustomer()">顧客を登録</button>
             <button id="cancelCustomerEditButton" class="cancel-button" hidden onclick="cancelCustomerEdit()">キャンセル</button>
           </div>
         </div>
         <div class="filters">
-          <label for="customerSearch">顧客名検索</label><input id="customerSearch" type="search">
+          <label for="customerSearch">顧客名検索</label>
+          <input id="customerSearch" type="search">
           <label for="customerSort">並び順</label>
-          <select id="customerSort"><option value="name">顧客名</option><option value="recent">登録順</option><option value="reservations">予約量順</option></select>
+          <select id="customerSort">
+            <option value="name">顧客名</option>
+            <option value="recent">登録順</option>
+            <option value="reservations">予約量順</option>
+          </select>
         </div>
-        <div class="table-wrapper"><table><thead><tr><th>顧客名</th><th>電話番号</th><th>住所</th><th>メモ</th><th>予約合計</th><th>出荷済み</th><th>未出荷</th><th>詳細</th><th>編集</th><th>削除</th></tr></thead><tbody id="customerList"></tbody></table></div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>顧客名</th>
+                <th>電話番号</th>
+                <th>住所</th>
+                <th>メモ</th>
+                <th>予約合計</th>
+                <th>出荷済み</th>
+                <th>未出荷</th>
+                <th>詳細</th>
+                <th>編集</th>
+                <th>削除</th>
+              </tr>
+            </thead>
+            <tbody id="customerList"></tbody>
+          </table>
+        </div>
         <section id="customerDetail" hidden></section>
       </main>
       <section class="backup-panel" id="backupPanel">

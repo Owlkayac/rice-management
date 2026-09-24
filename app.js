@@ -79,7 +79,7 @@ function refreshCustomerSelects() {
 }
 
 function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({
+  return String(s ?? "").replace(/[&<>\"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
@@ -184,12 +184,15 @@ function displayReservations() {
     tr.appendChild(td);
     body.appendChild(tr);
   });
+  if (!body.children.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty-message">${reservations.length ? "条件に合う予約がありません" : "まだ予約がありません"}</td></tr>`;
+  }
   const sums = {};
   reservations.forEach(r => {
     const k = `${r.variety}_${r.month}`;
     sums[k] = (sums[k] || 0) + (Number(r.kg) || 0);
   });
-  document.getElementById("summary").innerHTML = Object.entries(sums).map(([k, v]) => `<div class="summary-item">${k.replace("_", "　")}　${formatKg(v)}</div>`).join("");
+  document.getElementById("summary").innerHTML = Object.entries(sums).map(([k, v]) => `<div class="summary-item">${k.replace("_", "　")}　${formatKg(v)}</div>`).join("") || '<div class="empty-message">まだ予約がありません</div>';
 }
 
 function displayDashboard() {
@@ -231,7 +234,7 @@ function displayInventory() {
     const remain = inventory[v] - (shipped[v] || 0);
     const tr = document.createElement("tr");
     tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
-    tr.innerHTML = `<th>${v}</th><td><input type="number" min="0" value="${inventory[v]}"></td><td>${formatKg(reserved[v])}</td><td>${formatKg(remain)}</td><td>${remain < 0 ? "在庫不足" : remain < LOW_STOCK_THRESHOLD ? "在庫少" : ""}</td>`;
+    tr.innerHTML = `<th>${v}</th><td><input type="number" min="0" value="${inventory[v]}"></td><td>${formatKg(reserved[v])}</td><td>${formatKg(remain)}</td><td>${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
     tr.querySelector("input").onchange = e => {
       inventory[v] = Math.max(0, Number(e.target.value) || 0);
       save(INVENTORY_STORAGE_KEY, inventory);
@@ -316,6 +319,9 @@ function displayShipments() {
     tr.appendChild(td);
     b.appendChild(tr);
   });
+  if (!b.children.length) {
+    b.innerHTML = '<tr><td colspan="6" class="empty-message">まだ出荷の記録がありません</td></tr>';
+  }
   const r = getReservedTotals();
   const s = getShippedTotals();
   const body = document.getElementById("shipmentSummaryBody");
@@ -352,7 +358,7 @@ function displayCustomers() {
     }
     return String(a.c.furigana || a.c.name || "").localeCompare(String(b.c.furigana || b.c.name || ""), "ja") || String(a.c.name || "").localeCompare(String(b.c.name || ""), "ja");
   });
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.address)}</td><td>${esc(c.memo)}</td><td>${formatKg(s.reserved)}</td><td>${formatKg(s.shipped)}</td><td>${s.unshipped <= 0 ? "出荷完了" : formatKg(s.unshipped)}</td><td><button class="detail-button" onclick="showCustomerDetail('${c.customerId}')">詳細</button></td><td><button class="edit-button" onclick="editCustomer('${c.customerId}')">編集</button></td><td><button class="delete-button" onclick="deleteCustomer('${c.customerId}')">削除</button></td></tr>`).join("");
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.address)}</td><td>${esc(c.memo)}</td><td>${formatKg(s.reserved)}</td><td>${formatKg(s.shipped)}</td><td>${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td><button class="detail-button" onclick="showCustomerDetail('${c.customerId}')">詳細</button></td><td><button class="edit-button" onclick="editCustomer('${c.customerId}')">編集</button></td><td><button class="delete-button" onclick="deleteCustomer('${c.customerId}')">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
 }
 
 function saveCustomer() {
@@ -422,7 +428,7 @@ function showCustomerDetail(id) {
   const list = o => Object.entries(o).map(([k, v]) => `<li>${k}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? "出荷完了" : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV)}</ul></div></div><button onclick="document.getElementById('customerDetail').hidden=true">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV)}</ul></div></div><button onclick="document.getElementById('customerDetail').hidden=true">詳細を閉じる</button>`;
   d.scrollIntoView({ behavior: "smooth" });
 }
 

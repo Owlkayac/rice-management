@@ -4,11 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=6">
   </head>
   <body>
     <div class="container">
       <h1>🌾 米予約管理</h1>
+      <div id="syncNotice" class="notice" role="status" hidden></div>
       <nav class="view-tabs" aria-label="表示切り替え">
         <button type="button" class="view-tab active" data-view="reservationsView">予約登録・一覧</button>
         <button type="button" class="view-tab" data-view="dashboardView">ダッシュボード</button>
@@ -27,8 +28,8 @@
             <option value="">顧客管理から登録してください</option>
           </select>
           <small>新規顧客は「顧客管理」から登録してください。</small>
-          <label for="name">名前（既存データ用）</label>
-          <input id="name" type="text" placeholder="顧客を選択してください">
+          <label for="name">名前（自動入力・直接入力も可）</label>
+          <input id="name" type="text" placeholder="顧客を選ぶと自動で入ります">
           <label for="kg">重量（kg）</label>
           <input id="kg" type="number" min="0.1" step="0.1" placeholder="例：5">
           <div class="form-actions">
@@ -123,6 +124,12 @@
       <main id="inventoryView" class="view-panel" hidden>
         <h2>在庫管理</h2>
         <p class="inventory-help">品種ごとの在庫量を入力してください。</p>
+        <div class="mode-switch" role="group" aria-label="在庫の判定方法">
+          <span class="mode-label">判定方法</span>
+          <button type="button" class="mode-button active" id="stockModeShipped" data-mode="shipped" aria-pressed="true" onclick="setStockMode('shipped')">出荷ベース<small>在庫−出荷</small></button>
+          <button type="button" class="mode-button" id="stockModeReserved" data-mode="reserved" aria-pressed="false" onclick="setStockMode('reserved')">予約ベース<small>在庫−予約</small></button>
+        </div>
+        <p class="inventory-help" id="stockModeHelp"></p>
         <div class="table-wrapper">
           <table class="inventory-table">
             <thead>
@@ -130,7 +137,7 @@
                 <th>品種</th>
                 <th>在庫量</th>
                 <th>予約量</th>
-                <th>残り在庫</th>
+                <th id="stockRemainHeader">残り在庫</th>
                 <th>状態</th>
               </tr>
             </thead>
@@ -150,8 +157,8 @@
           <select id="shipmentCustomerSelect">
             <option value="">顧客管理から登録してください</option>
           </select>
-          <label for="shipmentName">名前（既存データ用）</label>
-          <input id="shipmentName" type="text" placeholder="顧客を選択してください">
+          <label for="shipmentName">名前（自動入力・直接入力も可）</label>
+          <input id="shipmentName" type="text" placeholder="顧客を選ぶと自動で入ります">
           <label for="shipmentKg">重量（kg）</label>
           <input id="shipmentKg" type="number" min="0.1" step="0.1" placeholder="例：20">
           <label for="shipmentMemo">メモ</label>
@@ -245,7 +252,7 @@
         <p class="backup-note">書き出したファイルには顧客の名前・電話番号・住所が含まれます。GitHubなどインターネット上に公開しないでください。</p>
       </section>
     </div>
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=6"></script>
     <script src="tab-fix.js"></script>
   </body>
 </html>

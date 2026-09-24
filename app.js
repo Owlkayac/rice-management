@@ -6,12 +6,27 @@ const LAST_BACKUP_STORAGE_KEY = "lastBackupAt";
 const BACKUP_APP_NAME = "rice-reservation-backup";
 const BACKUP_VERSION = 1;
 const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+const STOCK_MODE_KEY = "stockMode";
+const STOCK_MODES = {
+  shipped: {
+    basis: "出荷後",
+    help: "出荷済みの分を引いた残りで判定します。実際に手元へ残っているお米の量を確かめるときに向いています。"
+  },
+  reserved: {
+    basis: "予約後",
+    help: "予約している分を引いた残りで判定します。予約を受けすぎていないかを確かめるときに向いています。"
+  }
+};
 const varieties = ["A", "B", "C", "D", "E", "F"];
 const months = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
+const STORAGE_KEYS = ["reservations", SHIPMENTS_STORAGE_KEY, CUSTOMERS_STORAGE_KEY, INVENTORY_STORAGE_KEY];
+const lastSeen = {};
+STORAGE_KEYS.forEach(k => lastSeen[k] = rawGet(k));
 let reservations = read("reservations", []);
 let shipments = read(SHIPMENTS_STORAGE_KEY, []);
 let customers = read(CUSTOMERS_STORAGE_KEY, []);
 let inventory = loadInventory();
+let stockMode = loadStockMode();
 let editingIndex = null;
 let editingShipmentIndex = null;
 let editingCustomerId = null;
@@ -24,12 +39,37 @@ function read(k, f) {
   }
 }
 
+function rawGet(k) {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+}
+
+let lastSaveWarningAt = 0;
+
+function warnSaveFailed() {
+  const now = Date.now();
+  if (now - lastSaveWarningAt < 3000) return;
+  lastSaveWarningAt = now;
+  alert("保存できませんでした。この変更は保存されていません。\nブラウザの保存容量がいっぱいか、プライベートブラウズ中の可能性があります。「データを書き出す」でバックアップを取ってください。");
+}
+
 function save(k, v) {
-  localStorage.setItem(k, JSON.stringify(v));
+  const text = JSON.stringify(v);
+  try {
+    localStorage.setItem(k, text);
+    lastSeen[k] = text;
+    return true;
+  } catch {
+    warnSaveFailed();
+    return false;
+  }
 }
 
 function formatKg(v) {
-  return `${Math.round((Number(v) || 0) * 10) / 10}kg`;
+  return `${Math.round((Number(v) || 0) * 100) / 100}kg`;
 }
 
 function uid() {
@@ -45,6 +85,18 @@ function normalizeInventory(x) {
 
 function loadInventory() {
   return normalizeInventory(read(INVENTORY_STORAGE_KEY, {}));
+}
+
+function loadStockMode() {
+  const m = read(STOCK_MODE_KEY, "shipped");
+  return m === "reserved" ? "reserved" : "shipped";
+}
+
+function setStockMode(mode) {
+  if (mode !== "shipped" && mode !== "reserved") return;
+  stockMode = mode;
+  save(STOCK_MODE_KEY, mode);
+  displayInventory();
 }
 
 function fillOptions() {
@@ -67,7 +119,8 @@ function customerName(item) {
 }
 
 function refreshCustomerSelects() {
-  const opts = '<option value="">顧客管理から登録してください</option>' + customers.map(c => `<option value="${c.customerId}">${esc(c.name)}</option>`).join("");
+  const placeholder = customers.length ? "顧客を選択してください" : "顧客管理から登録してください";
+  const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${c.customerId}">${esc(c.name)}</option>`).join("");
   ["customerSelect", "shipmentCustomerSelect"].forEach(id => {
     const e = document.getElementById(id);
     const old = e.value;
@@ -79,7 +132,7 @@ function refreshCustomerSelects() {
 }
 
 function esc(s) {
-  return String(s ?? "").replace(/[&<>\"']/g, c => ({
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
@@ -93,9 +146,10 @@ function getFormValues() {
 }
 
 function addReservation() {
+  if (!ensureFresh()) return;
   const r = getFormValues();
   if (!r.name) {
-    alert("顧客を選択するか、既存データ用の名前を入力してください");
+    alert("顧客を選択するか、名前を入力してください");
     return;
   }
   if (!r.kg || r.kg <= 0) {
@@ -139,6 +193,7 @@ function clearReservation() {
 }
 
 function deleteReservation(i) {
+  if (!ensureFresh()) return;
   if (confirm("この予約を削除しますか？")) {
     reservations.splice(i, 1);
     save("reservations", reservations);
@@ -216,8 +271,11 @@ function displayDashboard() {
   const rc = new Set(reservations.map(r => customerFor(r)?.customerId || `name:${r.name}`));
   const sc = new Set(shipments.map(r => customerFor(r)?.customerId || `name:${r.name}`));
   document.getElementById("dashboardCustomerCount").textContent = customers.length;
-  document.getElementById("dashboardReservationCustomerCount").textContent = rc.size;
-  document.getElementById("dashboardShipmentCustomerCount").textContent = sc.size;
+  document.getElementById("dashboardCustomers").textContent = `${customers.length}人`;
+  document.getElementById("dashboardReservationCustomerCount").textContent = `${rc.size}人`;
+  document.getElementById("dashboardShipmentCustomerCount").textContent = `${sc.size}人`;
+  document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
+  document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
   document.getElementById("dashboardUnshippedTotal").textContent = formatKg(grand - getShippedTotalsAll());
 }
 
@@ -228,14 +286,24 @@ function getShippedTotalsAll() {
 function displayInventory() {
   const reserved = getReservedTotals();
   const shipped = getShippedTotals();
+  const used = stockMode === "reserved" ? reserved : shipped;
+  const info = STOCK_MODES[stockMode];
+  document.querySelectorAll(".mode-button").forEach(btn => {
+    const on = btn.dataset.mode === stockMode;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  document.getElementById("stockRemainHeader").innerHTML = `残り在庫<br><small>${info.basis}</small>`;
+  document.getElementById("stockModeHelp").textContent = `${info.help}残りが${LOW_STOCK_THRESHOLD}kg未満で「在庫少」、0kg未満で「在庫不足」と表示します。`;
   const body = document.getElementById("inventoryList");
   body.innerHTML = "";
   varieties.forEach(v => {
-    const remain = inventory[v] - (shipped[v] || 0);
+    const remain = inventory[v] - (used[v] || 0);
     const tr = document.createElement("tr");
     tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
     tr.innerHTML = `<th>${v}</th><td><input type="number" min="0" value="${inventory[v]}"></td><td>${formatKg(reserved[v])}</td><td>${formatKg(remain)}</td><td>${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
     tr.querySelector("input").onchange = e => {
+      if (!ensureFresh()) return;
       inventory[v] = Math.max(0, Number(e.target.value) || 0);
       save(INVENTORY_STORAGE_KEY, inventory);
       refreshAll();
@@ -253,6 +321,7 @@ function shipmentValues() {
 }
 
 function addShipment() {
+  if (!ensureFresh()) return;
   const s = shipmentValues();
   if (!s.date || !s.name || !s.kg || s.kg <= 0) {
     alert("出荷日・顧客・出荷kgを入力してください");
@@ -295,6 +364,7 @@ function clearShipmentForm() {
 }
 
 function deleteShipment(i) {
+  if (!ensureFresh()) return;
   if (confirm("この出荷データを削除しますか？")) {
     shipments.splice(i, 1);
     save(SHIPMENTS_STORAGE_KEY, shipments);
@@ -362,6 +432,7 @@ function displayCustomers() {
 }
 
 function saveCustomer() {
+  if (!ensureFresh()) return;
   const name = document.getElementById("customerName").value.trim();
   const furigana = document.getElementById("customerFurigana").value.trim();
   if (!name) {
@@ -393,6 +464,7 @@ function cancelCustomerEdit() {
 }
 
 function deleteCustomer(id) {
+  if (!ensureFresh()) return;
   const c = customers.find(x => x.customerId === id);
   if (!c) {
     return;
@@ -449,6 +521,71 @@ function refreshAll() {
   refreshCustomerSelects();
   showBackupStatus();
 }
+
+// ---------- 複数タブ対策（他のタブでの更新を取り込む） ----------
+
+let noticeTimer = null;
+
+function showNotice(message) {
+  const el = document.getElementById("syncNotice");
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    el.hidden = true;
+  }, 8000);
+}
+
+function isStale() {
+  return STORAGE_KEYS.some(k => rawGet(k) !== lastSeen[k]);
+}
+
+function reloadFromStorage() {
+  reservations = read("reservations", []);
+  shipments = read(SHIPMENTS_STORAGE_KEY, []);
+  customers = read(CUSTOMERS_STORAGE_KEY, []);
+  inventory = loadInventory();
+  STORAGE_KEYS.forEach(k => lastSeen[k] = rawGet(k));
+  if (editingIndex !== null) cancelEdit();
+  if (editingShipmentIndex !== null) cancelShipmentEdit();
+  if (editingCustomerId !== null) cancelCustomerEdit();
+  const detail = document.getElementById("customerDetail");
+  detail.hidden = true;
+  detail.innerHTML = "";
+  refreshAll();
+}
+
+function ensureFresh() {
+  if (!isStale()) return true;
+  reloadFromStorage();
+  alert("別のタブや画面でデータが更新されていたため、最新の内容に更新しました。もう一度操作してください。");
+  return false;
+}
+
+function syncFromOtherTab() {
+  if (!isStale()) return;
+  reloadFromStorage();
+  showNotice("別のタブでデータが更新されたため、最新の内容に更新しました。");
+}
+
+function onStorageChange(e) {
+  if (e.storageArea !== localStorage) return;
+  if (e.key === STOCK_MODE_KEY) {
+    stockMode = loadStockMode();
+    displayInventory();
+    return;
+  }
+  syncFromOtherTab();
+}
+
+window.addEventListener("storage", onStorageChange);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) syncFromOtherTab();
+});
+window.addEventListener("pageshow", e => {
+  if (e.persisted) syncFromOtherTab();
+});
 
 // ---------- バックアップ（書き出し・読み込み） ----------
 
@@ -596,3 +733,4 @@ document.getElementById("shipmentCustomerSelect").onchange = e => {
 };
 document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView(e.dataset.view));
 refreshAll();
+

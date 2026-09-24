@@ -220,7 +220,7 @@ function displayInventory() {
   const body = document.getElementById("inventoryList");
   body.innerHTML = "";
   varieties.forEach(v => {
-    const remain = inventory[v] - shipped[v];
+    const remain = inventory[v] - (shipped[v] || 0);
     const tr = document.createElement("tr");
     tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
     tr.innerHTML = `<th>${v}</th><td><input type="number" min="0" value="${inventory[v]}"></td><td>${formatKg(reserved[v])}</td><td>${formatKg(remain)}</td><td>${remain < 0 ? "在庫不足" : remain < LOW_STOCK_THRESHOLD ? "在庫少" : ""}</td>`;
@@ -311,7 +311,7 @@ function displayShipments() {
   const r = getReservedTotals();
   const s = getShippedTotals();
   const body = document.getElementById("shipmentSummaryBody");
-  body.innerHTML = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${formatKg(r[v] - s[v])}</td></tr>`).join("");
+  body.innerHTML = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${formatKg((r[v] || 0) - (s[v] || 0))}</td></tr>`).join("");
 }
 
 function customerStats(c) {

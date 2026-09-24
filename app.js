@@ -2,6 +2,10 @@ const LOW_STOCK_THRESHOLD = 100;
 const INVENTORY_STORAGE_KEY = "inventory";
 const SHIPMENTS_STORAGE_KEY = "shipments";
 const CUSTOMERS_STORAGE_KEY = "customers";
+const LAST_BACKUP_STORAGE_KEY = "lastBackupAt";
+const BACKUP_APP_NAME = "rice-reservation-backup";
+const BACKUP_VERSION = 1;
+const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
 const varieties = ["A", "B", "C", "D", "E", "F"];
 const months = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
 let reservations = read("reservations", []);
@@ -32,11 +36,15 @@ function uid() {
   return `customer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function loadInventory() {
-  const x = read(INVENTORY_STORAGE_KEY, {});
+function normalizeInventory(x) {
+  x = x || {};
   const r = {};
   varieties.forEach(v => r[v] = Number.isFinite(Number(x[v])) && Number(x[v]) >= 0 ? Number(x[v]) : 0);
   return r;
+}
+
+function loadInventory() {
+  return normalizeInventory(read(INVENTORY_STORAGE_KEY, {}));
 }
 
 function fillOptions() {
@@ -433,6 +441,140 @@ function refreshAll() {
   displayShipments();
   displayCustomers();
   refreshCustomerSelects();
+  showBackupStatus();
+}
+
+// ---------- バックアップ（書き出し・読み込み） ----------
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function timestampForFilename() {
+  const d = new Date();
+  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}`;
+}
+
+function showBackupStatus() {
+  const el = document.getElementById("backupStatus");
+  if (!el) return;
+  const last = read(LAST_BACKUP_STORAGE_KEY, null);
+  const lastDate = last ? new Date(last) : null;
+  const lastText = lastDate && !Number.isNaN(lastDate.getTime()) ? `最終バックアップ：${lastDate.toLocaleString("ja-JP")}` : "まだバックアップしていません";
+  el.textContent = `現在のデータ：予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件　${lastText}`;
+}
+
+function exportBackup() {
+  const backup = {
+    app: BACKUP_APP_NAME,
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    data: { reservations, shipments, customers, inventory }
+  };
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rice-backup-${timestampForFilename()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  save(LAST_BACKUP_STORAGE_KEY, new Date().toISOString());
+  showBackupStatus();
+}
+
+function isPlainObject(x) {
+  return x !== null && typeof x === "object" && !Array.isArray(x);
+}
+
+function validateBackup(obj) {
+  if (!isPlainObject(obj) || obj.app !== BACKUP_APP_NAME) {
+    return { error: "米予約管理のバックアップファイルではありません" };
+  }
+  if (obj.version !== BACKUP_VERSION) {
+    return { error: "対応していないバージョンのバックアップファイルです" };
+  }
+  const d = obj.data;
+  if (!isPlainObject(d)) {
+    return { error: "バックアップの中にデータが見つかりません" };
+  }
+  const labels = { reservations: "予約", shipments: "出荷", customers: "顧客" };
+  for (const key of Object.keys(labels)) {
+    if (!Array.isArray(d[key])) {
+      return { error: `${labels[key]}のデータが正しくありません` };
+    }
+  }
+  if (!d.reservations.every(r => isPlainObject(r) && typeof r.variety === "string")) {
+    return { error: "予約のデータが正しくありません" };
+  }
+  if (!d.shipments.every(s => isPlainObject(s) && typeof s.variety === "string")) {
+    return { error: "出荷のデータが正しくありません" };
+  }
+  if (!d.customers.every(c => isPlainObject(c) && typeof c.name === "string" && /^[A-Za-z0-9_-]+$/.test(String(c.customerId)))) {
+    return { error: "顧客のデータが正しくありません" };
+  }
+  if (!isPlainObject(d.inventory)) {
+    return { error: "在庫のデータが正しくありません" };
+  }
+  return { data: { reservations: d.reservations, shipments: d.shipments, customers: d.customers, inventory: d.inventory } };
+}
+
+function applyBackup(d) {
+  reservations = d.reservations;
+  shipments = d.shipments;
+  customers = d.customers;
+  inventory = normalizeInventory(d.inventory);
+  save("reservations", reservations);
+  save(SHIPMENTS_STORAGE_KEY, shipments);
+  save(CUSTOMERS_STORAGE_KEY, customers);
+  save(INVENTORY_STORAGE_KEY, inventory);
+  cancelEdit();
+  cancelShipmentEdit();
+  cancelCustomerEdit();
+  const detail = document.getElementById("customerDetail");
+  detail.hidden = true;
+  detail.innerHTML = "";
+  refreshAll();
+}
+
+function importBackup(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const finish = message => {
+    input.value = "";
+    if (message) alert(message);
+  };
+  if (file.size > MAX_BACKUP_BYTES) {
+    finish("ファイルが大きすぎます。バックアップファイルを選んでください");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onerror = () => finish("ファイルを読み込めませんでした");
+  reader.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(reader.result);
+    } catch {
+      finish("ファイルを読み込めませんでした。書き出したバックアップファイル（.json）を選んでください");
+      return;
+    }
+    const result = validateBackup(parsed);
+    if (result.error) {
+      finish(result.error);
+      return;
+    }
+    const d = result.data;
+    const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
+    if (!confirm(message)) {
+      finish();
+      return;
+    }
+    applyBackup(d);
+    finish("バックアップを読み込みました");
+  };
+  reader.readAsText(file);
 }
 
 fillOptions();

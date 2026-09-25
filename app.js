@@ -6,6 +6,13 @@ const LAST_BACKUP_STORAGE_KEY = "lastBackupAt";
 const BACKUP_APP_NAME = "rice-reservation-backup";
 const BACKUP_VERSION = 1;
 const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+const RESERVATION_SORT_KEY = "reservationSort";
+const SHIPMENT_SORT_KEY = "shipmentSort";
+const RESERVATION_SORTS = ["recent", "month", "variety", "name", "kg"];
+const SHIPMENT_SORTS = ["recent", "dateDesc", "dateAsc", "name"];
+const CHANNELS = ["ウェブフォーム", "Instagram", "LINE", "電話・対面", "その他"];
+const STATUSES = { received: "受付済み", preparing: "出荷準備中", shipped: "出荷済み" };
+const STATUS_KEYS = ["received", "preparing", "shipped"];
 const STOCK_MODE_KEY = "stockMode";
 const STOCK_MODES = {
   shipped: {
@@ -47,13 +54,25 @@ function rawGet(k) {
   }
 }
 
+function notify(message, type = "info", duration = 5000) {
+  const area = document.getElementById("toastArea");
+  if (!area) return;
+  while (area.children.length >= 4) area.firstChild.remove();
+  const el = document.createElement("div");
+  el.className = `toast toast-${type}`;
+  el.textContent = message;
+  el.onclick = () => el.remove();
+  area.appendChild(el);
+  setTimeout(() => el.remove(), duration);
+}
+
 let lastSaveWarningAt = 0;
 
 function warnSaveFailed() {
   const now = Date.now();
   if (now - lastSaveWarningAt < 3000) return;
   lastSaveWarningAt = now;
-  alert("保存できませんでした。この変更は保存されていません。\nブラウザの保存容量がいっぱいか、プライベートブラウズ中の可能性があります。「データを書き出す」でバックアップを取ってください。");
+  notify("保存できませんでした。この変更は保存されていません。\nブラウザの保存容量がいっぱいか、プライベートブラウズ中の可能性があります。「データを書き出す」でバックアップを取ってください。", "error", 10000);
 }
 
 function save(k, v) {
@@ -87,6 +106,62 @@ function loadInventory() {
   return normalizeInventory(read(INVENTORY_STORAGE_KEY, {}));
 }
 
+function loadChoice(key, allowed, fallback) {
+  const v = read(key, fallback);
+  return allowed.includes(v) ? v : fallback;
+}
+
+function statusOf(r) {
+  return r && STATUS_KEYS.includes(r.status) ? r.status : "received";
+}
+
+function channelOf(r) {
+  return r && CHANNELS.includes(r.channel) ? r.channel : "";
+}
+
+function stockWarning(r, ignoreIndex) {
+  const stock = Number(inventory[r.variety]) || 0;
+  const already = reservations.reduce((a, x, i) => a + (i !== ignoreIndex && x.variety === r.variety ? Number(x.kg) || 0 : 0), 0);
+  const total = already + r.kg;
+  if (total <= stock) return "";
+  let text = `${r.variety}の予約が在庫を${formatKg(total - stock)}超えます。\n\n在庫：${formatKg(stock)}\nこれまでの予約：${formatKg(already)}\n今回の予約：${formatKg(r.kg)}\n予約の合計：${formatKg(total)}\n\nこのまま登録しますか？`;
+  if (stock === 0) text += "\n（��庫が未入力の場合は、先に「在庫管理」で入力してください）";
+  return text;
+}
+
+function todayString() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function monthNumber(m) {
+  return parseInt(m, 10) || 99;
+}
+
+function customerSortKey(item) {
+  const c = customerFor(item);
+  return String(c?.furigana || customerName(item));
+}
+
+function reservationComparator(mode) {
+  const byIndex = (a, b) => a.i - b.i;
+  const byVariety = (a, b) => varieties.indexOf(a.r.variety) - varieties.indexOf(b.r.variety);
+  const byMonth = (a, b) => monthNumber(a.r.month) - monthNumber(b.r.month);
+  if (mode === "month") return (a, b) => byMonth(a, b) || byVariety(a, b) || byIndex(a, b);
+  if (mode === "variety") return (a, b) => byVariety(a, b) || byMonth(a, b) || byIndex(a, b);
+  if (mode === "name") return (a, b) => customerSortKey(a.r).localeCompare(customerSortKey(b.r), "ja") || byMonth(a, b) || byIndex(a, b);
+  if (mode === "kg") return (a, b) => (Number(b.r.kg) || 0) - (Number(a.r.kg) || 0) || byIndex(a, b);
+  return byIndex;
+}
+
+function shipmentComparator(mode) {
+  const byIndex = (a, b) => a.i - b.i;
+  if (mode === "dateDesc") return (a, b) => String(b.s.date).localeCompare(String(a.s.date)) || b.i - a.i;
+  if (mode === "dateAsc") return (a, b) => String(a.s.date).localeCompare(String(b.s.date)) || byIndex(a, b);
+  if (mode === "name") return (a, b) => customerSortKey(a.s).localeCompare(customerSortKey(b.s), "ja") || String(a.s.date).localeCompare(String(b.s.date)) || byIndex(a, b);
+  return byIndex;
+}
+
 function loadStockMode() {
   const m = read(STOCK_MODE_KEY, "shipped");
   return m === "reserved" ? "reserved" : "shipped";
@@ -107,6 +182,9 @@ function fillOptions() {
   document.getElementById("filterVariety").innerHTML = '<option value="">すべて</option>' + varieties.map(v => `<option>${v}</option>`).join("");
   document.getElementById("month").innerHTML = months.map(m => `<option>${m}</option>`).join("");
   document.getElementById("filterMonth").innerHTML = '<option value="">すべて</option>' + months.map(m => `<option>${m}</option>`).join("");
+  document.getElementById("channel").innerHTML = '<option value="">未選択</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("");
+  document.getElementById("filterChannel").innerHTML = '<option value="">すべて</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("") + '<option value="__none">未設定</option>';
+  document.getElementById("filterStatus").innerHTML = '<option value="">すべて</option>' + STATUS_KEYS.map(k => `<option value="${k}">${STATUSES[k]}</option>`).join("");
   refreshCustomerSelects();
 }
 
@@ -132,7 +210,7 @@ function refreshCustomerSelects() {
 }
 
 function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({
+  return String(s ?? "").replace(/[&<>\"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
@@ -141,7 +219,7 @@ function getFormValues() {
   const s = document.getElementById("customerSelect");
   const legacy = document.getElementById("name").value.trim();
   return {
-    variety: variety.value, month: month.value, name: legacy || customers.find(c => c.customerId === s.value)?.name || "", customerId: s.value || undefined, kg: Number(document.getElementById("kg").value)
+    variety: variety.value, month: month.value, name: legacy || customers.find(c => c.customerId === s.value)?.name || "", customerId: s.value || undefined, kg: Number(document.getElementById("kg").value), channel: document.getElementById("channel").value
   };
 }
 
@@ -149,16 +227,20 @@ function addReservation() {
   if (!ensureFresh()) return;
   const r = getFormValues();
   if (!r.name) {
-    alert("顧客を選択するか、名前を入力してください");
+    notify("顧客を選択するか、名前を入力してください", "warn");
     return;
   }
   if (!r.kg || r.kg <= 0) {
-    alert("kgを入力してください");
+    notify("kgを入力してください", "warn");
     return;
   }
+  const warning = stockWarning(r, editingIndex);
+  if (warning && !confirm(warning)) return;
   if (editingIndex === null) {
+    r.status = "received";
     reservations.push(r);
   } else {
+    r.status = statusOf(reservations[editingIndex]);
     reservations[editingIndex] = r;
     cancelEdit();
   }
@@ -174,6 +256,7 @@ function editReservation(i) {
   document.getElementById("month").value = r.month;
   document.getElementById("name").value = r.name || "";
   document.getElementById("kg").value = r.kg;
+  document.getElementById("channel").value = channelOf(r);
   document.getElementById("customerSelect").value = r.customerId || customerFor(r)?.customerId || "";
   document.getElementById("submitButton").textContent = "変更を保存";
   document.getElementById("cancelEditButton").hidden = false;
@@ -182,6 +265,7 @@ function editReservation(i) {
 function cancelEdit() {
   editingIndex = null;
   clearReservation();
+  document.getElementById("channel").value = "";
   document.getElementById("submitButton").textContent = "予約を追加";
   document.getElementById("cancelEditButton").hidden = true;
 }
@@ -219,18 +303,39 @@ function displayReservations() {
   const q = document.getElementById("searchName").value.trim();
   const fv = document.getElementById("filterVariety").value;
   const fm = document.getElementById("filterMonth").value;
+  const fc = document.getElementById("filterChannel").value;
+  const fs = document.getElementById("filterStatus").value;
   const body = document.getElementById("reservationList");
   body.innerHTML = "";
-  reservations.forEach((r, i) => {
-    if (q && !customerName(r).includes(q) && !(r.name || "").includes(q) || fv && r.variety !== fv || fm && r.month !== fm) {
-      return;
-    }
+  const sortMode = document.getElementById("reservationSort").value;
+  reservations.map((r, i) => ({ r, i })).filter(({ r }) => !(q && !customerName(r).includes(q) && !(r.name || "").includes(q) || fv && r.variety !== fv || fm && r.month !== fm || fc && channelOf(r) !== (fc === "__none" ? "" : fc) || fs && statusOf(r) !== fs)).sort(reservationComparator(sortMode)).forEach(({ r, i }) => {
     const tr = document.createElement("tr");
-    [r.variety, r.month, customerName(r), formatKg(r.kg)].forEach(v => {
+    [r.variety, r.month, customerName(r), formatKg(r.kg), channelOf(r) || "未設定"].forEach((v, n) => {
       const td = document.createElement("td");
       td.textContent = v;
+      td.dataset.label = ["品種", "月", "名前", "kg", "受付経路"][n];
       tr.appendChild(td);
     });
+    const statusTd = document.createElement("td");
+    statusTd.dataset.label = "状態";
+    const sel = document.createElement("select");
+    sel.className = `status-select status-${statusOf(r)}`;
+    sel.setAttribute("aria-label", "予約の状態");
+    STATUS_KEYS.forEach(k => {
+      const o = document.createElement("option");
+      o.value = k;
+      o.textContent = STATUSES[k];
+      sel.appendChild(o);
+    });
+    sel.value = statusOf(r);
+    sel.onchange = e => {
+      if (!ensureFresh()) return;
+      reservations[i].status = e.target.value;
+      save("reservations", reservations);
+      refreshAll();
+    };
+    statusTd.appendChild(sel);
+    tr.appendChild(statusTd);
     const td = document.createElement("td");
     td.className = "action-cell";
     td.innerHTML = '<button class="edit-button">編集</button><button class="delete-button">削除</button>';
@@ -240,14 +345,18 @@ function displayReservations() {
     body.appendChild(tr);
   });
   if (!body.children.length) {
-    body.innerHTML = `<tr><td colspan="5" class="empty-message">${reservations.length ? "条件に合う予約がありません" : "まだ予約がありません"}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" class="empty-message">${reservations.length ? "条件に合う予約がありません" : "まだ予約がありません"}</td></tr>`;
   }
   const sums = {};
   reservations.forEach(r => {
     const k = `${r.variety}_${r.month}`;
     sums[k] = (sums[k] || 0) + (Number(r.kg) || 0);
   });
-  document.getElementById("summary").innerHTML = Object.entries(sums).map(([k, v]) => `<div class="summary-item">${k.replace("_", "　")}　${formatKg(v)}</div>`).join("") || '<div class="empty-message">まだ予約がありません</div>';
+  document.getElementById("summary").innerHTML = Object.entries(sums).sort(([a], [b]) => {
+    const [va, ma] = a.split("_");
+    const [vb, mb] = b.split("_");
+    return varieties.indexOf(va) - varieties.indexOf(vb) || monthNumber(ma) - monthNumber(mb);
+  }).map(([k, v]) => `<div class="summary-item">${k.replace("_", "　")}　${formatKg(v)}</div>`).join("") || '<div class="empty-message">まだ予約がありません</div>';
 }
 
 function displayDashboard() {
@@ -270,13 +379,21 @@ function displayDashboard() {
   document.getElementById("dashboardTotal").textContent = formatKg(grand);
   const rc = new Set(reservations.map(r => customerFor(r)?.customerId || `name:${r.name}`));
   const sc = new Set(shipments.map(r => customerFor(r)?.customerId || `name:${r.name}`));
-  document.getElementById("dashboardCustomerCount").textContent = customers.length;
   document.getElementById("dashboardCustomers").textContent = `${customers.length}人`;
   document.getElementById("dashboardReservationCustomerCount").textContent = `${rc.size}人`;
   document.getElementById("dashboardShipmentCustomerCount").textContent = `${sc.size}人`;
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
   document.getElementById("dashboardUnshippedTotal").textContent = formatKg(grand - getShippedTotalsAll());
+  const sumKg = list => list.reduce((a, r) => a + (Number(r.kg) || 0), 0);
+  document.getElementById("dashboardChannelBody").innerHTML = [...CHANNELS, ""].map(ch => {
+    const list = reservations.filter(r => channelOf(r) === ch);
+    return `<tr><td>${ch ? esc(ch) : "未設定"}</td><td>${list.length}件</td><td>${formatKg(sumKg(list))}</td></tr>`;
+  }).join("");
+  document.getElementById("dashboardStatusBody").innerHTML = STATUS_KEYS.map(k => {
+    const list = reservations.filter(r => statusOf(r) === k);
+    return `<tr><td><span class="badge badge-${k}">${STATUSES[k]}</span></td><td>${list.length}件</td><td>${formatKg(sumKg(list))}</td></tr>`;
+  }).join("");
 }
 
 function getShippedTotalsAll() {
@@ -324,7 +441,7 @@ function addShipment() {
   if (!ensureFresh()) return;
   const s = shipmentValues();
   if (!s.date || !s.name || !s.kg || s.kg <= 0) {
-    alert("出荷日・顧客・出荷kgを入力してください");
+    notify("出荷日・顧客・出荷kgを入力してください", "warn");
     return;
   }
   if (editingShipmentIndex === null) {
@@ -359,7 +476,8 @@ function cancelShipmentEdit() {
 }
 
 function clearShipmentForm() {
-  ["shipmentDate", "shipmentName", "shipmentKg", "shipmentMemo"].forEach(id => document.getElementById(id).value = "");
+  ["shipmentName", "shipmentKg", "shipmentMemo"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("shipmentDate").value = todayString();
   shipmentCustomerSelect.value = "";
 }
 
@@ -375,14 +493,17 @@ function deleteShipment(i) {
 function displayShipments() {
   const b = document.getElementById("shipmentList");
   b.innerHTML = "";
-  shipments.forEach((s, i) => {
+  const shipSort = document.getElementById("shipmentSort").value;
+  shipments.map((s, i) => ({ s, i })).sort(shipmentComparator(shipSort)).forEach(({ s, i }) => {
     const tr = document.createElement("tr");
-    [s.date, s.variety, customerName(s), formatKg(s.kg), s.memo || ""].forEach(v => {
+    [s.date, s.variety, customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
       const td = document.createElement("td");
       td.textContent = v;
+      td.dataset.label = ["出荷日", "品種", "顧客", "kg", "メモ"][n];
       tr.appendChild(td);
     });
     const td = document.createElement("td");
+    td.className = "action-cell";
     td.innerHTML = '<button class="edit-button">編集</button><button class="delete-button">削除</button>';
     td.children[0].onclick = () => editShipment(i);
     td.children[1].onclick = () => deleteShipment(i);
@@ -403,7 +524,6 @@ function customerStats(c) {
   const ss = shipments.filter(s => customerFor(s)?.customerId === c.customerId);
   const byV = totals(rs);
   const shipV = totals(ss);
-  const byM = totals(rs, r => true);
   const month = {};
   rs.forEach(r => month[r.month] = (month[r.month] || 0) + (Number(r.kg) || 0));
   const reserved = rs.reduce((a, r) => a + (Number(r.kg) || 0), 0);
@@ -428,7 +548,7 @@ function displayCustomers() {
     }
     return String(a.c.furigana || a.c.name || "").localeCompare(String(b.c.furigana || b.c.name || ""), "ja") || String(a.c.name || "").localeCompare(String(b.c.name || ""), "ja");
   });
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.address)}</td><td>${esc(c.memo)}</td><td>${formatKg(s.reserved)}</td><td>${formatKg(s.shipped)}</td><td>${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td><button class="detail-button" onclick="showCustomerDetail('${c.customerId}')">詳細</button></td><td><button class="edit-button" onclick="editCustomer('${c.customerId}')">編集</button></td><td><button class="delete-button" onclick="deleteCustomer('${c.customerId}')">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td class="action-td"><button class="detail-button" onclick="showCustomerDetail('${c.customerId}')">詳細</button></td><td class="action-td"><button class="edit-button" onclick="editCustomer('${c.customerId}')">編集</button></td><td class="action-td"><button class="delete-button" onclick="deleteCustomer('${c.customerId}')">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
 }
 
 function saveCustomer() {
@@ -436,12 +556,18 @@ function saveCustomer() {
   const name = document.getElementById("customerName").value.trim();
   const furigana = document.getElementById("customerFurigana").value.trim();
   if (!name) {
-    alert("顧客名を入力してください");
+    notify("顧客名を入力してください", "warn");
     return;
   }
   if (!furigana) {
-    alert("ふりがなを入力してください");
+    notify("ふりがなを入力してください", "warn");
     return;
+  }
+  const squash = t => String(t || "").replace(/\s+/g, "");
+  const original = editingCustomerId ? customers.find(x => x.customerId === editingCustomerId) : null;
+  const nameChanged = !original || squash(original.name) !== squash(name);
+  if (nameChanged && customers.some(x => x.customerId !== editingCustomerId && squash(x.name) === squash(name))) {
+    if (!confirm(`「${name}」という名前の顧客がすでに登録されています。\n同じ人なら、新しく登録せず既存の顧客を使ってください。\n別の人として、このまま保存しますか？`)) return;
   }
   const c = {
     customerId: editingCustomerId || uid(), name, furigana, phone: document.getElementById("customerPhone").value.trim(), address: document.getElementById("customerAddress").value.trim(), memo: document.getElementById("customerMemo").value.trim()
@@ -471,7 +597,7 @@ function deleteCustomer(id) {
   }
   const s = customerStats(c);
   if (s.rs.length || s.ss.length) {
-    alert("この顧客には予約または出荷データが存在します。関連データを先に確認してください。");
+    notify("この顧客には予約または出荷データが存在します。関連データを先に確認してください。", "warn");
     return;
   }
   if (confirm(`${c.name}を削除しますか？`)) {
@@ -506,7 +632,12 @@ function showCustomerDetail(id) {
 
 function switchView(id) {
   document.querySelectorAll(".view-panel").forEach(e => e.hidden = e.id !== id);
-  document.querySelectorAll(".view-tab").forEach(e => e.classList.toggle("active", e.dataset.view === id));
+  document.querySelectorAll(".view-tab").forEach(e => {
+    const on = e.dataset.view === id;
+    e.classList.toggle("active", on);
+    e.setAttribute("aria-selected", on ? "true" : "false");
+    if (on && e.scrollIntoView) e.scrollIntoView({ block: "nearest", inline: "center" });
+  });
   if (id === "customersView") {
     displayCustomers();
   }
@@ -523,19 +654,6 @@ function refreshAll() {
 }
 
 // ---------- 複数タブ対策（他のタブでの更新を取り込む） ----------
-
-let noticeTimer = null;
-
-function showNotice(message) {
-  const el = document.getElementById("syncNotice");
-  if (!el) return;
-  el.textContent = message;
-  el.hidden = false;
-  clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => {
-    el.hidden = true;
-  }, 8000);
-}
 
 function isStale() {
   return STORAGE_KEYS.some(k => rawGet(k) !== lastSeen[k]);
@@ -559,14 +677,14 @@ function reloadFromStorage() {
 function ensureFresh() {
   if (!isStale()) return true;
   reloadFromStorage();
-  alert("別のタブや画面でデータが更新されていたため、最新の内容に更新しました。もう一度操作してください。");
+  notify("別のタブや画面でデータが更新されていたため、最新の内容に更新しました。もう一度操作してください。", "warn");
   return false;
 }
 
 function syncFromOtherTab() {
   if (!isStale()) return;
   reloadFromStorage();
-  showNotice("別のタブでデータが更新されたため、最新の内容に更新しました。");
+  notify("別のタブでデータが更新されたため、最新の内容に更新しました。", "info", 8000);
 }
 
 function onStorageChange(e) {
@@ -685,9 +803,9 @@ function importBackup(event) {
   const input = event.target;
   const file = input.files && input.files[0];
   if (!file) return;
-  const finish = message => {
+  const finish = (message, type = "error") => {
     input.value = "";
-    if (message) alert(message);
+    if (message) notify(message, type);
   };
   if (file.size > MAX_BACKUP_BYTES) {
     finish("ファイルが大きすぎます。バックアップファイルを選んでください");
@@ -715,13 +833,24 @@ function importBackup(event) {
       return;
     }
     applyBackup(d);
-    finish("バックアップを読み込みました");
+    finish("バックアップを読み込みました", "success");
   };
   reader.readAsText(file);
 }
 
 fillOptions();
-["searchName", "filterVariety", "filterMonth", "customerSearch", "customerSort"].forEach(id => document.getElementById(id).addEventListener("input", refreshAll));
+document.getElementById("reservationSort").value = loadChoice(RESERVATION_SORT_KEY, RESERVATION_SORTS, "recent");
+document.getElementById("shipmentSort").value = loadChoice(SHIPMENT_SORT_KEY, SHIPMENT_SORTS, "recent");
+document.getElementById("shipmentDate").value = todayString();
+document.getElementById("reservationSort").addEventListener("change", e => {
+  save(RESERVATION_SORT_KEY, e.target.value);
+  refreshAll();
+});
+document.getElementById("shipmentSort").addEventListener("change", e => {
+  save(SHIPMENT_SORT_KEY, e.target.value);
+  refreshAll();
+});
+["searchName", "filterVariety", "filterMonth", "filterChannel", "filterStatus", "customerSearch", "customerSort"].forEach(id => document.getElementById(id).addEventListener("input", refreshAll));
 document.getElementById("filterVariety").onchange = refreshAll;
 document.getElementById("filterMonth").onchange = refreshAll;
 document.getElementById("customerSort").onchange = displayCustomers;
@@ -733,4 +862,3 @@ document.getElementById("shipmentCustomerSelect").onchange = e => {
 };
 document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView(e.dataset.view));
 refreshAll();
-

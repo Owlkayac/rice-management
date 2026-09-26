@@ -171,6 +171,41 @@ function refreshShipmentReservationOptions(selectedReservationId) {
   sel.innerHTML = opts.join("");
   sel.value = list.some(({ r }) => r.id === selectedReservationId) ? selectedReservationId : "";
   sel.disabled = !customerId;
+  syncShipmentVarietyWithReservation();
+}
+
+// 「対象の予約」を選んでいる間は、品種をその予約の品種にそろえて変えられないようにする。
+// 予約の選択を外したら、品種はまた選べるようにする
+function syncShipmentVarietyWithReservation() {
+  const reservationId = document.getElementById("shipmentReservation").value;
+  const linked = reservations.find(x => x.id === reservationId);
+  if (linked) shipmentVariety.value = linked.variety;
+  shipmentVariety.disabled = !!linked;
+}
+
+// 紐づけた予約と品種が違う出荷を探す（見つけるだけで、直さない）
+function findVarietyMismatches() {
+  return shipments.map(s => ({ s, r: s.reservationId ? reservations.find(x => x.id === s.reservationId) : null }))
+    .filter(({ s, r }) => r && r.variety !== s.variety);
+}
+
+function displayVarietyMismatches() {
+  const box = document.getElementById("varietyMismatchNotice");
+  if (!box) return;
+  const list = findVarietyMismatches();
+  box.hidden = !list.length;
+  box.innerHTML = "";
+  if (!list.length) return;
+  const title = document.createElement("p");
+  title.textContent = `予約と品種が違う出荷が${list.length}件あります。内容を確かめて、必要なら出荷を編集してください。`;
+  box.appendChild(title);
+  const ul = document.createElement("ul");
+  list.forEach(({ s, r }) => {
+    const li = document.createElement("li");
+    li.textContent = `${s.date || "日付なし"}・${customerName(s)}・${formatKg(s.kg)}：出荷の品種「${s.variety}」／予約の品種「${r.variety}」（予約：${r.month}・${formatKg(r.kg)}）`;
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
 }
 
 function stockWarning(r, ignoreId) {
@@ -599,7 +634,22 @@ function addShipment() {
       refreshShipmentReservationOptions();
       return;
     }
+    if (linked.variety !== s.variety) {
+      notify(`出荷の品種「${s.variety}」が、選んだ予約の品種「${linked.variety}」と違います。品種か対象の予約を確かめてください`, "warn");
+      return;
+    }
   }
+  // 編集で品種が変わるときは、保存する前に必ず確かめる（予約に合わせて自動で変わった場合に気づけるように）
+  const original = editingShipmentId === null ? null : shipments.find(x => x.id === editingShipmentId);
+  if (original && original.variety !== s.variety) {
+    const hint = s.reservationId ? "\n\n品種は、紐づけた予約に合わせています。元の品種のままにするなら「キャンセル」を押し、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください。" : "";
+    confirmThen(`この出荷の品種を「${original.variety}」から「${s.variety}」に変えて保存しますか？${hint}`, () => commitShipment(s));
+    return;
+  }
+  commitShipment(s);
+}
+
+function commitShipment(s) {
   if (editingShipmentId === null) {
     s.id = uid("shipment");
     shipments.push(s);
@@ -646,6 +696,9 @@ function editShipment(i) {
   // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
   shipmentName.value = customer ? customer.name : s.name || "";
   refreshShipmentReservationOptions(s.reservationId);
+  if (shipmentVariety.value !== s.variety) {
+    notify(`この出荷は、紐づけた予約と品種が違います（出荷「${s.variety}」／予約「${shipmentVariety.value}」）。品種を予約に合わせて「${shipmentVariety.value}」にしました。元の品種のままにするなら、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください`, "warn", 12000);
+  }
   shipmentSubmitButton.textContent = "変更を保存";
   cancelShipmentEditButton.hidden = false;
 }
@@ -687,6 +740,7 @@ function getVisibleShipments() {
 }
 
 function displayShipments() {
+  displayVarietyMismatches();
   const b = document.getElementById("shipmentList");
   b.innerHTML = "";
   getVisibleShipments().forEach(({ s, i }) => {
@@ -1214,9 +1268,6 @@ document.getElementById("name").oninput = () => detachCustomerIfRenamed("custome
 document.getElementById("shipmentName").oninput = () => {
   if (detachCustomerIfRenamed("shipmentCustomerSelect", "shipmentName")) refreshShipmentReservationOptions();
 };
-document.getElementById("shipmentReservation").onchange = e => {
-  const r = reservations.find(x => x.id === e.target.value);
-  if (r) shipmentVariety.value = r.variety;
-};
+document.getElementById("shipmentReservation").onchange = syncShipmentVarietyWithReservation;
 document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView(e.dataset.view));
 refreshAll();

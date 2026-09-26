@@ -76,6 +76,10 @@ function notify(message, type = "info", duration = 5000) {
 }
 
 let lastSaveWarningAt = 0;
+// 起動時などに付けた id を、まだ保存できていないとき true（予約・出荷・顧客のつながりを切らないため、
+// この間は3つのどれを保存するときも、3つまとめて保存する）
+let idsNotSaved = false;
+const ID_LINKED_KEYS = ["reservations", SHIPMENTS_STORAGE_KEY, CUSTOMERS_STORAGE_KEY];
 
 function warnSaveFailed() {
   const now = Date.now();
@@ -84,7 +88,15 @@ function warnSaveFailed() {
   notify("保存できませんでした。この変更は保存されていません。\nブラウザの保存容量がいっぱいか、プライベートブラウズ中の可能性があります。「データを書き出す」でバックアップを取ってください。", "error", 10000);
 }
 
+// 予約・出荷・顧客は、必ず画面のデータ（reservations・shipments・customers）に反映してから、その変数を渡して保存すること。
+// id の保存待ちの間は、渡した v ではなく、この3つの変数がまとめて保存されるため
 function save(k, v) {
+  // 付けた id がまだ保存できていない間は、予約・出荷・顧客をまとめて保存する（1つだけ保存して、つながりが切れないように）
+  if (idsNotSaved && ID_LINKED_KEYS.includes(k)) {
+    if (saveIdLinkedData()) return true;
+    warnSaveFailed();
+    return false;
+  }
   const text = JSON.stringify(v);
   try {
     localStorage.setItem(k, text);
@@ -94,6 +106,59 @@ function save(k, v) {
     warnSaveFailed();
     return false;
   }
+}
+
+// 複数のデータをまとめて保存する。どれか1つでも保存に失敗したら、先に保存したものも元の中身に戻して false を返す
+// （容量不足などで途中まで保存され、「予約は新しいのに顧客は古い」ような食い違いが残らないようにするため）。
+// 失敗の通知は呼び出す側で出す
+function saveAll(entries) {
+  const written = [];
+  try {
+    entries.forEach(([k, v]) => {
+      const before = rawGet(k);
+      const text = JSON.stringify(v);
+      localStorage.setItem(k, text);
+      lastSeen[k] = text;
+      written.push({ k, before, text });
+    });
+    return true;
+  } catch {
+    // 元に戻すのは、書き込めたキーだけ（書き込めなかったキーは元の中身のまま残っている）。
+    // 先に書き込んだキーを消して容量を空けてから、元の中身を書き戻す
+    written.forEach(({ k }) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        // 消せなくても、書き戻しは続ける
+      }
+    });
+    let restored = true;
+    written.forEach(({ k, before, text }) => {
+      try {
+        if (before !== null) localStorage.setItem(k, before);
+      } catch {
+        restored = false;
+        // 元に戻せないときも、そのキーを空のままにしない（さっき書き込めた新しい中身を書き直す）
+        try {
+          localStorage.setItem(k, text);
+        } catch {
+          // ここまで失敗したら、どうにもできない
+        }
+      }
+      lastSeen[k] = rawGet(k);
+    });
+    if (!restored) {
+      notify("保存に失敗し、元のデータにも戻せませんでした。データが食い違っている可能性があります。すぐに「データを書き出す」でバックアップを取り、内容を確かめてください。", "error", 20000);
+    }
+    return false;
+  }
+}
+
+// 予約・出荷・顧客をまとめて保存する。保存できたら、付けた id の保存待ちを解く
+function saveIdLinkedData() {
+  if (!saveAll([["reservations", reservations], [SHIPMENTS_STORAGE_KEY, shipments], [CUSTOMERS_STORAGE_KEY, customers]])) return false;
+  idsNotSaved = false;
+  return true;
 }
 
 function formatKg(v) {
@@ -121,8 +186,8 @@ function uid(prefix = "customer") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// id が無い古いデータに id を付ける
-function ensureIds(list, prefix, storageKey) {
+// id が無い古いデータに id を付ける（保存はしない。付けたら true を返す）
+function fillMissingIds(list, prefix) {
   let changed = false;
   list.forEach(x => {
     if (!x.id) {
@@ -130,24 +195,21 @@ function ensureIds(list, prefix, storageKey) {
       changed = true;
     }
   });
-  if (changed) save(storageKey, list);
+  return changed;
 }
 
 // 顧客の id が無い、または使えない値なら、使える文字列の id に直す
 // （id が無いと、編集で顧客が2件に増えたり、削除で id の無い顧客がまとめて消えたりするため）。
 // 0以上の整数の id は文字列に直す（選択欄の値は文字列なので、数値のままだと選んでも見つからないため）
-function ensureCustomerIds() {
+// 保存はしない。直したら true を返す
+function fixCustomerIds() {
   let changed = false;
   customers.forEach(c => {
     if (typeof c.customerId === "string" && SAFE_ID_PATTERN.test(c.customerId)) return;
     replaceCustomerId(c, isLegacyNumericId(c.customerId) ? String(c.customerId) : uid());
     changed = true;
   });
-  if (!changed) return;
-  // 予約・出荷を先に保存する（顧客だけ保存できて予約・出荷の保存に失敗しても、数値の id なら次の起動で直せるように）
-  save("reservations", reservations);
-  save(SHIPMENTS_STORAGE_KEY, shipments);
-  save(CUSTOMERS_STORAGE_KEY, customers);
+  return changed;
 }
 
 // 古いデータの数値の id として受け付ける値（0以上で、正確に表せる範囲の整数）
@@ -158,13 +220,14 @@ function isLegacyNumericId(v) {
 // 顧客の id を newId に置き換え、その顧客を指していた予約・出荷の customerId も合わせる
 function replaceCustomerId(c, newId) {
   const oldId = c.customerId;
-  const hasOldId = oldId !== undefined && oldId !== null && oldId !== "" && oldId !== false;
+  // 「id が無い」は undefined・null・空文字・false だけ（0 は古いデータの数値の id として扱う）
+  const hasId = v => v !== undefined && v !== null && v !== "" && v !== false;
   const linked = [...reservations, ...shipments].filter(x => {
-    if (hasOldId) {
+    if (hasId(oldId)) {
       return x.customerId === oldId;
     }
     // id が無かった顧客は、今この顧客に名前でつながっている予約・出荷に id を書き込む（あとで名前を変えてもつながりが切れないように）
-    return !x.customerId && customerFor(x) === c;
+    return !hasId(x.customerId) && customerFor(x) === c;
   });
   c.customerId = newId;
   linked.forEach(x => {
@@ -172,10 +235,21 @@ function replaceCustomerId(c, newId) {
   });
 }
 
-function ensureAllIds() {
-  ensureIds(reservations, "reservation", "reservations");
-  ensureIds(shipments, "shipment", SHIPMENTS_STORAGE_KEY);
-  ensureCustomerIds();
+// 予約・出荷・顧客に足りない id を付ける。persist が true なら、3つをまとめて保存する。
+// 保存に失敗しても、画面のデータには付けた id を残す（id が無いと、編集・削除で別のデータを操作してしまうため）。
+// その代わり idsNotSaved を立て、次にどれかを保存するときに3つまとめて保存し直す
+function ensureAllIds(persist = true) {
+  const reservationsChanged = fillMissingIds(reservations, "reservation");
+  const shipmentsChanged = fillMissingIds(shipments, "shipment");
+  const customersChanged = fixCustomerIds();
+  if (!persist) return;
+  if (!(reservationsChanged || shipmentsChanged || customersChanged)) {
+    // 読み込んだばかりの保存データに直すところが無い＝画面と保存の id はそろっている
+    idsNotSaved = false;
+    return;
+  }
+  idsNotSaved = true;
+  if (!saveIdLinkedData()) warnSaveFailed();
 }
 
 ensureAllIds();
@@ -1427,7 +1501,7 @@ function validateBackup(obj) {
   // 古いデータで id が無いものは、読み込んだあとに付け直す
   const idOk = v => v === undefined || v === null || v === "" || (typeof v === "string" && SAFE_ID_PATTERN.test(v));
   // 顧客の id は、使える文字の文字列のほか、古いデータに備えて「無し」と「0以上の整数」も受け付ける。
-  // どちらも読み込んだあとに ensureCustomerIds で文字列の id に直す
+  // どちらも読み込んだあとに fixCustomerIds で文字列の id に直す
   const customerIdOk = v => idOk(v) || isLegacyNumericId(v);
   const badReservation = d.reservations.findIndex(r => !(isPlainObject(r) && varietyOk(r.variety) && idOk(r.id) && customerIdOk(r.customerId)));
   if (badReservation !== -1) {
@@ -1450,18 +1524,29 @@ function validateBackup(obj) {
   return { data: { reservations: d.reservations, shipments: d.shipments, customers: d.customers, inventory: d.inventory, prices: d.prices || {} } };
 }
 
+// バックアップの内容に入れ替えて保存する。保存できたら true、できなければ元のデータのまま false を返す
 function applyBackup(d) {
+  const previous = { reservations, shipments, customers, inventory, prices };
   reservations = d.reservations;
   shipments = d.shipments;
   customers = d.customers;
   inventory = normalizeInventory(d.inventory);
   prices = loadPricesFrom(d.prices);
-  ensureAllIds();
-  save("reservations", reservations);
-  save(SHIPMENTS_STORAGE_KEY, shipments);
-  save(CUSTOMERS_STORAGE_KEY, customers);
-  save(INVENTORY_STORAGE_KEY, inventory);
-  save(PRICES_STORAGE_KEY, prices);
+  ensureAllIds(false);
+  const saved = saveAll([
+    ["reservations", reservations],
+    [SHIPMENTS_STORAGE_KEY, shipments],
+    [CUSTOMERS_STORAGE_KEY, customers],
+    [INVENTORY_STORAGE_KEY, inventory],
+    [PRICES_STORAGE_KEY, prices]
+  ]);
+  if (!saved) {
+    ({ reservations, shipments, customers, inventory, prices } = previous);
+    refreshAll();
+    return false;
+  }
+  // 読み込んだデータは id も含めてすべて保存できたので、保存待ちの id は無い
+  idsNotSaved = false;
   cancelEdit();
   cancelShipmentEdit();
   cancelCustomerEdit();
@@ -1469,6 +1554,7 @@ function applyBackup(d) {
   detail.hidden = true;
   detail.innerHTML = "";
   refreshAll();
+  return true;
 }
 
 function importBackup(event) {
@@ -1501,8 +1587,11 @@ function importBackup(event) {
     const d = result.data;
     const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
     confirmThen(message, () => {
-      applyBackup(d);
-      finish("バックアップを読み込みました", "success");
+      if (applyBackup(d)) {
+        finish("バックアップを読み込みました", "success");
+      } else {
+        finish("バックアップを保存できなかったため、読み込みを取りやめました（保存できる容量が足りない可能性があります）。今までのデータはそのままです");
+      }
     }, () => finish());
   };
   reader.readAsText(file);

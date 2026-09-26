@@ -260,15 +260,47 @@ function customerName(item) {
   return customerFor(item)?.name || item.name || "未登録";
 }
 
+function findCustomer(customerId) {
+  return customerId ? customers.find(c => c.customerId === customerId) : undefined;
+}
+
+// 顧客の選択と名前欄が食い違っていれば、利用者に見せる説明を返す（問題なければ ""）。
+// 食い違ったまま保存すると、別の人の予約・出荷が、選んでいる顧客のものとして数えられてしまう。
+function customerNameMismatch(customerId, name) {
+  if (!customerId) return "";
+  const c = findCustomer(customerId);
+  if (!c) return "選んでいる顧客が見つかりません。顧客を選び直してください";
+  if (String(name || "").trim() === String(c.name || "").trim()) return "";
+  return `選んでいる顧客「${c.name}」と名前欄「${name}」が違います。別の人なら顧客の選択を外してください`;
+}
+
+// 顧客を選んだまま名前欄に別の名前を入力したら、顧客の選択を外して知らせる。外したら true を返す
+function detachCustomerIfRenamed(selectId, nameId) {
+  const select = document.getElementById(selectId);
+  const c = findCustomer(select.value);
+  const typed = document.getElementById(nameId).value.trim();
+  if (!c || typed === String(c.name || "").trim()) return false;
+  select.value = "";
+  notify(`名前欄が「${c.name}」と違うため、顧客の選択を外しました`, "info");
+  return true;
+}
+
+// 顧客の選択肢を作り直す。選んでいた顧客の名前が変わっていたら名前欄も今の名前にそろえ、
+// 選んでいた顧客が消えていたら名前欄も空にする（名前欄と選択の食い違いを残さないため）
 function refreshCustomerSelects() {
   const placeholder = customers.length ? "顧客を選択してください" : "顧客管理から登録してください";
   const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${c.customerId}">${esc(c.name)}</option>`).join("");
-  ["customerSelect", "shipmentCustomerSelect"].forEach(id => {
+  [["customerSelect", "name"], ["shipmentCustomerSelect", "shipmentName"]].forEach(([id, nameId]) => {
     const e = document.getElementById(id);
+    const nameInput = document.getElementById(nameId);
     const old = e.value;
     e.innerHTML = opts;
-    if (customers.some(c => c.customerId === old)) {
+    const c = findCustomer(old);
+    if (c) {
       e.value = old;
+      nameInput.value = c.name;
+    } else if (old) {
+      nameInput.value = "";
     }
   });
 }
@@ -292,6 +324,11 @@ function addReservation() {
   const r = getFormValues();
   if (!r.name) {
     notify("顧客を選択するか、名前を入力してください", "warn");
+    return;
+  }
+  const mismatch = customerNameMismatch(r.customerId, r.name);
+  if (mismatch) {
+    notify(mismatch, "warn");
     return;
   }
   if (!r.kg || r.kg <= 0) {
@@ -334,10 +371,12 @@ function editReservation(i) {
   editingReservationId = r.id;
   document.getElementById("variety").value = r.variety;
   document.getElementById("month").value = r.month;
-  document.getElementById("name").value = r.name || "";
   document.getElementById("kg").value = r.kg;
   document.getElementById("channel").value = channelOf(r);
-  document.getElementById("customerSelect").value = r.customerId || customerFor(r)?.customerId || "";
+  const customer = findCustomer(r.customerId || customerFor(r)?.customerId);
+  document.getElementById("customerSelect").value = customer ? customer.customerId : "";
+  // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
+  document.getElementById("name").value = customer ? customer.name : r.name || "";
   document.getElementById("submitButton").textContent = "変更を保存";
   document.getElementById("cancelEditButton").hidden = false;
 }
@@ -548,6 +587,11 @@ function addShipment() {
     notify("出荷日・顧客・出荷kgを入力してください", "warn");
     return;
   }
+  const mismatch = customerNameMismatch(s.customerId, s.name);
+  if (mismatch) {
+    notify(mismatch, "warn");
+    return;
+  }
   if (s.reservationId) {
     const linked = reservations.find(x => x.id === s.reservationId);
     if (!linked || !s.customerId || customerFor(linked)?.customerId !== s.customerId) {
@@ -595,10 +639,12 @@ function editShipment(i) {
   editingShipmentId = s.id;
   shipmentVariety.value = s.variety;
   shipmentDate.value = s.date;
-  shipmentName.value = s.name || "";
   shipmentKg.value = s.kg;
   shipmentMemo.value = s.memo || "";
-  shipmentCustomerSelect.value = s.customerId || customerFor(s)?.customerId || "";
+  const customer = findCustomer(s.customerId || customerFor(s)?.customerId);
+  shipmentCustomerSelect.value = customer ? customer.customerId : "";
+  // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
+  shipmentName.value = customer ? customer.name : s.name || "";
   refreshShipmentReservationOptions(s.reservationId);
   shipmentSubmitButton.textContent = "変更を保存";
   cancelShipmentEditButton.hidden = false;
@@ -616,8 +662,9 @@ function clearShipmentForm(keepCustomerId = "") {
   ["shipmentKg", "shipmentMemo"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("shipmentDate").value = todayString();
   // 先に顧客の選択を決めてから、予約の選択肢をその顧客の最新の予約で作り直す（前の顧客の予約を残さない）
-  shipmentCustomerSelect.value = keepCustomerId || "";
-  shipmentName.value = customers.find(c => c.customerId === shipmentCustomerSelect.value)?.name || "";
+  const customer = findCustomer(keepCustomerId);
+  shipmentCustomerSelect.value = customer ? customer.customerId : "";
+  shipmentName.value = customer ? customer.name : "";
   refreshShipmentReservationOptions();
 }
 
@@ -1162,6 +1209,10 @@ document.getElementById("customerSelect").onchange = e => {
 document.getElementById("shipmentCustomerSelect").onchange = e => {
   document.getElementById("shipmentName").value = customers.find(c => c.customerId === e.target.value)?.name || "";
   refreshShipmentReservationOptions();
+};
+document.getElementById("name").oninput = () => detachCustomerIfRenamed("customerSelect", "name");
+document.getElementById("shipmentName").oninput = () => {
+  if (detachCustomerIfRenamed("shipmentCustomerSelect", "shipmentName")) refreshShipmentReservationOptions();
 };
 document.getElementById("shipmentReservation").onchange = e => {
   const r = reservations.find(x => x.id === e.target.value);

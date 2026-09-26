@@ -36,8 +36,9 @@ let customers = read(CUSTOMERS_STORAGE_KEY, []);
 let inventory = loadInventory();
 let prices = loadPrices();
 let stockMode = loadStockMode();
-let editingIndex = null;
-let editingShipmentIndex = null;
+// 編集中の予約・出荷は、配列の番号ではなく id で覚える（削除で番号がずれても別のデータを上書きしないため）
+let editingReservationId = null;
+let editingShipmentId = null;
 let editingCustomerId = null;
 
 function read(k, f) {
@@ -97,18 +98,24 @@ function uid(prefix = "customer") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function migrateReservationIds() {
+// id が無い古いデータに id を付ける
+function ensureIds(list, prefix, storageKey) {
   let changed = false;
-  reservations.forEach(r => {
-    if (!r.id) {
-      r.id = uid("reservation");
+  list.forEach(x => {
+    if (!x.id) {
+      x.id = uid(prefix);
       changed = true;
     }
   });
-  if (changed) save("reservations", reservations);
+  if (changed) save(storageKey, list);
 }
 
-migrateReservationIds();
+function ensureAllIds() {
+  ensureIds(reservations, "reservation", "reservations");
+  ensureIds(shipments, "shipment", SHIPMENTS_STORAGE_KEY);
+}
+
+ensureAllIds();
 
 function normalizeInventory(x) {
   x = x || {};
@@ -142,9 +149,9 @@ function remainingForReservation(r) {
   return (Number(r.kg) || 0) - shippedForReservation(r);
 }
 
-function openReservationsFor(customerId, excludeShipmentIndex) {
+function openReservationsFor(customerId, excludeShipmentId) {
   return reservations.map((r, i) => ({ r, i })).filter(({ r }) => customerFor(r)?.customerId === customerId).map(({ r, i }) => ({
-    r, i, shipped: shipments.reduce((a, s, si) => a + (s.reservationId === r.id && si !== excludeShipmentIndex ? Number(s.kg) || 0 : 0), 0)
+    r, i, shipped: shipments.reduce((a, s) => a + (s.reservationId === r.id && s.id !== excludeShipmentId ? Number(s.kg) || 0 : 0), 0)
   })).map(x => ({ ...x, remaining: (Number(x.r.kg) || 0) - x.shipped }));
 }
 
@@ -152,7 +159,7 @@ function refreshShipmentReservationOptions(selectedReservationId) {
   const sel = document.getElementById("shipmentReservation");
   if (!sel) return;
   const customerId = shipmentCustomerSelect.value;
-  const list = customerId ? openReservationsFor(customerId, editingShipmentIndex) : [];
+  const list = customerId ? openReservationsFor(customerId, editingShipmentId) : [];
   const opts = ['<option value="">特定の予約に紐づけない</option>'];
   list.forEach(({ r, remaining }) => {
     if (remaining > 0 || r.id === selectedReservationId) {
@@ -164,9 +171,9 @@ function refreshShipmentReservationOptions(selectedReservationId) {
   sel.disabled = !customerId;
 }
 
-function stockWarning(r, ignoreIndex) {
+function stockWarning(r, ignoreId) {
   const stock = Number(inventory[r.variety]) || 0;
-  const already = reservations.reduce((a, x, i) => a + (i !== ignoreIndex && x.variety === r.variety ? Number(x.kg) || 0 : 0), 0);
+  const already = reservations.reduce((a, x) => a + (x.id !== ignoreId && x.variety === r.variety ? Number(x.kg) || 0 : 0), 0);
   const total = already + r.kg;
   if (total <= stock) return "";
   let text = `${r.variety}の予約が在庫を${formatKg(total - stock)}超えます。\n\n在庫：${formatKg(stock)}\nこれまでの予約：${formatKg(already)}\n今回の予約：${formatKg(r.kg)}\n予約の合計：${formatKg(total)}\n\nこのまま登録しますか？`;
@@ -289,14 +296,23 @@ function addReservation() {
     notify("kgを入力してください", "warn");
     return;
   }
-  const warning = stockWarning(r, editingIndex);
+  const warning = stockWarning(r, editingReservationId);
   if (warning && !confirm(warning)) return;
-  if (editingIndex === null) {
+  if (editingReservationId === null) {
+    r.id = uid("reservation");
     r.status = "received";
     reservations.push(r);
   } else {
-    r.status = statusOf(reservations[editingIndex]);
-    reservations[editingIndex] = r;
+    const i = reservations.findIndex(x => x.id === editingReservationId);
+    if (i === -1) {
+      notify("編集中の予約が見つかりません（削除された可能性があります）。編集を取り消しました。", "warn");
+      cancelEdit();
+      refreshAll();
+      return;
+    }
+    r.id = editingReservationId;
+    r.status = statusOf(reservations[i]);
+    reservations[i] = r;
     cancelEdit();
   }
   save("reservations", reservations);
@@ -306,7 +322,7 @@ function addReservation() {
 
 function editReservation(i) {
   const r = reservations[i];
-  editingIndex = i;
+  editingReservationId = r.id;
   document.getElementById("variety").value = r.variety;
   document.getElementById("month").value = r.month;
   document.getElementById("name").value = r.name || "";
@@ -318,7 +334,7 @@ function editReservation(i) {
 }
 
 function cancelEdit() {
-  editingIndex = null;
+  editingReservationId = null;
   clearReservation();
   document.getElementById("channel").value = "";
   document.getElementById("submitButton").textContent = "予約を追加";
@@ -334,7 +350,8 @@ function clearReservation() {
 function deleteReservation(i) {
   if (!ensureFresh()) return;
   if (confirm("この予約を削除しますか？")) {
-    reservations.splice(i, 1);
+    const [removed] = reservations.splice(i, 1);
+    if (removed.id === editingReservationId) cancelEdit();
     save("reservations", reservations);
     refreshAll();
   }
@@ -487,7 +504,7 @@ function displayInventory() {
     const remain = inventory[v] - (used[v] || 0);
     const tr = document.createElement("tr");
     tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
-    tr.innerHTML = `<th>${v}</th><td><input type="number" min="0" value="${inventory[v]}"></td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input"></td><td>${formatKg(reserved[v])}</td><td>${formatKg(remain)}</td><td>${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
+    tr.innerHTML = `<th>${v}</th><td data-label="在庫量"><input type="number" min="0" value="${inventory[v]}" aria-label="${v}の在庫量(kg)"></td><td data-label="予約量">${formatKg(reserved[v])}</td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input" aria-label="${v}の単価(円/kg)"></td><td data-label="残り在庫">${formatKg(remain)}</td><td>${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
     tr.querySelector("input").onchange = e => {
       if (!ensureFresh()) return;
       inventory[v] = Math.max(0, Number(e.target.value) || 0);
@@ -519,10 +536,19 @@ function addShipment() {
     notify("出荷日・顧客・出荷kgを入力してください", "warn");
     return;
   }
-  if (editingShipmentIndex === null) {
+  if (editingShipmentId === null) {
+    s.id = uid("shipment");
     shipments.push(s);
   } else {
-    shipments[editingShipmentIndex] = s;
+    const i = shipments.findIndex(x => x.id === editingShipmentId);
+    if (i === -1) {
+      notify("編集中の出荷が見つかりません（削除された可能性があります）。編集を取り消しました。", "warn");
+      cancelShipmentEdit();
+      refreshAll();
+      return;
+    }
+    s.id = editingShipmentId;
+    shipments[i] = s;
     cancelShipmentEdit();
   }
   save(SHIPMENTS_STORAGE_KEY, shipments);
@@ -541,7 +567,7 @@ function addShipment() {
 
 function editShipment(i) {
   const s = shipments[i];
-  editingShipmentIndex = i;
+  editingShipmentId = s.id;
   shipmentVariety.value = s.variety;
   shipmentDate.value = s.date;
   shipmentName.value = s.name || "";
@@ -554,7 +580,7 @@ function editShipment(i) {
 }
 
 function cancelShipmentEdit() {
-  editingShipmentIndex = null;
+  editingShipmentId = null;
   clearShipmentForm();
   shipmentSubmitButton.textContent = "出荷を登録";
   cancelShipmentEditButton.hidden = true;
@@ -570,7 +596,8 @@ function clearShipmentForm() {
 function deleteShipment(i) {
   if (!ensureFresh()) return;
   if (confirm("この出荷データを削除しますか？")) {
-    shipments.splice(i, 1);
+    const [removed] = shipments.splice(i, 1);
+    if (removed.id === editingShipmentId) cancelShipmentEdit();
     save(SHIPMENTS_STORAGE_KEY, shipments);
     refreshAll();
   }
@@ -761,8 +788,9 @@ function reloadFromStorage() {
   inventory = loadInventory();
   prices = loadPrices();
   STORAGE_KEYS.forEach(k => lastSeen[k] = rawGet(k));
-  if (editingIndex !== null) cancelEdit();
-  if (editingShipmentIndex !== null) cancelShipmentEdit();
+  ensureAllIds();
+  if (editingReservationId !== null) cancelEdit();
+  if (editingShipmentId !== null) cancelShipmentEdit();
   if (editingCustomerId !== null) cancelCustomerEdit();
   const detail = document.getElementById("customerDetail");
   detail.hidden = true;
@@ -996,6 +1024,7 @@ function applyBackup(d) {
   customers = d.customers;
   inventory = normalizeInventory(d.inventory);
   prices = loadPricesFrom(d.prices);
+  ensureAllIds();
   save("reservations", reservations);
   save(SHIPMENTS_STORAGE_KEY, shipments);
   save(CUSTOMERS_STORAGE_KEY, customers);

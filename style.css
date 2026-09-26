@@ -183,14 +183,16 @@ button:active {
   white-space: pre-line;
 }
 
-/* 在庫管理の「品種なし・不明」の行（在庫と結びつけられない予約） */
+/* 在庫管理・出荷集計の「品種なし」の行（在庫と結びつけられない予約・出荷） */
 .stock-unknown td,
-.inventory-table .stock-unknown th {
+.inventory-table .stock-unknown th,
+.shipment-summary-table .stock-unknown th {
   background: #f7f7f7;
   color: #555;
 }
 
-.inventory-table .stock-unknown th {
+.inventory-table .stock-unknown th,
+.shipment-summary-table .stock-unknown th {
   white-space: nowrap;
 }
 
@@ -201,8 +203,7 @@ table {
 }
 
 .dashboard-table,
-.inventory-table,
-.shipment-summary-table {
+.inventory-table {
   min-width: 980px;
 }
 

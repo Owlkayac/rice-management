@@ -408,6 +408,33 @@ small {
   font-size: 14px;
 }
 
+/* 「未出荷の顧客」タブの、顧客が登録されていない予約・出荷 */
+.unlinked-section {
+  margin-top: 24px;
+}
+
+.unlinked-group {
+  margin: 12px 0 20px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 5px solid #c08a00;
+  border-radius: 8px;
+  background: #fffdf5;
+}
+
+.unlinked-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 8px;
+}
+
+/* 見出し行のボタンは、名前が長くても横いっぱいに伸ばさない */
+.unlinked-head .tool-button {
+  flex: 0 0 auto;
+}
+
 .unshipped-summary {
   margin: 0 0 12px;
   font-weight: bold;

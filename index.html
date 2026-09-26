@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=20">
+    <link rel="stylesheet" href="style.css?v=21">
   </head>
   <body>
     <div class="container">
@@ -324,6 +324,11 @@
             <tbody id="unshippedCustomerList"></tbody>
           </table>
         </div>
+        <section id="unlinkedSection" class="unlinked-section" hidden>
+          <h3>顧客に結びついていない予約・出荷</h3>
+          <p class="section-help">名前だけで入力されていて同じ名前の顧客が登録されていない、または登録されていた顧客が見つからない（削除されたなど）ため、上の一覧に入っていない分です（未出荷が残っているものだけを出しています）。「顧客として登録」で顧客を登録すると、同じ名前の予約・出荷がその顧客に結びつきます。ボタンが出ていない名前は、それぞれの案内に従ってください。間違いなら「編集」で直すか、「削除」してください。</p>
+          <div id="unlinkedList"></div>
+        </section>
       </main>
 
       <main id="customersView" class="view-panel" hidden>
@@ -402,6 +407,6 @@
     </div>
     <div id="docPrint" class="doc-print"></div>
     <div id="toastArea" class="toast-area" role="status" aria-live="polite"></div>
-    <script src="app.js?v=20"></script>
+    <script src="app.js?v=21"></script>
   </body>
 </html>

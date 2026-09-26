@@ -1184,6 +1184,169 @@ function displayUnshippedCustomers() {
   if (summary) summary.textContent = list.length ? `未出荷の顧客：${list.length}人（合計${formatKg(total)}）` : "";
 }
 
+// 顧客に結びついていない予約・出荷を、「未出荷の顧客」タブに出す。予約・出荷ごとに「編集」「削除」を付ける。
+// 名前だけのもの（同じ名前の顧客がいない）は名前ごとに、顧客の id はあるのにその顧客が見つからないものは顧客の id ごとにまとめ、
+// 未出荷が残っているまとまりだけを出す
+function displayUnlinkedUnshipped() {
+  const section = document.getElementById("unlinkedSection");
+  const box = document.getElementById("unlinkedList");
+  if (!section || !box) return;
+  const groups = new Map();
+  const add = (item, kind) => {
+    if (customerFor(item)) return;
+    // 顧客の id が入っているのに、その顧客がいない（削除された・別の端末のデータなど）ものは、名前だけのものと分ける
+    // （同じ名前の顧客を登録しても、id で探すため結びつかない）。判定は customerFor と同じく「id に中身があるか」で行う。
+    // 別の人どうしの予約と出荷が差し引きされないよう、顧客の id ごとにまとめる
+    const missingCustomer = Boolean(item.customerId);
+    const rawName = String(item.name || "");
+    const trimmed = rawName.trim();
+    const key = missingCustomer ? `id:${item.customerId}` : `name:${trimmed}`;
+    if (!groups.has(key)) {
+      groups.set(key, { name: trimmed || "（名前なし）", noName: !trimmed, missingCustomer, hasSpacedName: false, rs: [], ss: [] });
+    }
+    const g = groups.get(key);
+    // 見出しの名前がまだ無ければ、名前の入った件で入れ直す（顧客の id ごとのまとまりで、最初の1件だけ名前が空の場合など）
+    if (g.noName && trimmed) {
+      g.name = trimmed;
+      g.noName = false;
+    }
+    // 名前の前後に空白があると、顧客として登録しても（登録時に空白が取られるため）結びつかない
+    if (rawName !== rawName.trim()) g.hasSpacedName = true;
+    g[kind].push(item);
+  };
+  reservations.forEach(r => add(r, "rs"));
+  shipments.forEach(s => add(s, "ss"));
+  const list = [...groups.values()].map(g => ({ ...g, unshipped: unshippedByVariety(g.rs, g.ss) })).filter(g => g.unshipped.remaining > 0).sort((a, b) => b.unshipped.remaining - a.unshipped.remaining);
+  box.innerHTML = "";
+  section.hidden = !list.length;
+  list.forEach(g => box.appendChild(unlinkedGroupElement(g)));
+  // 上の一覧だけを見て「未出荷なし」と思わないように、未登録の分があることを上にも出す
+  if (list.length) {
+    const total = roundKg(list.reduce((a, g) => a + g.unshipped.remaining, 0));
+    const note = `ほかに、顧客に結びついていない予約が${list.length}人（名前）分（合計${formatKg(total)}）あります（下に表示）`;
+    const summary = document.getElementById("unshippedCustomerSummary");
+    if (summary) summary.textContent = summary.textContent ? `${summary.textContent}／${note}` : note;
+    const empty = document.querySelector("#unshippedCustomerList .empty-message");
+    if (empty) empty.textContent = "登録済みの顧客には未出荷がありません";
+  }
+}
+
+// 顧客が登録されていない名前1つ分の表示（利用者の入力は textContent で入れる）
+function unlinkedGroupElement(g) {
+  const wrap = document.createElement("section");
+  wrap.className = "unlinked-group";
+  const head = document.createElement("div");
+  head.className = "unlinked-head";
+  const title = document.createElement("strong");
+  title.textContent = g.missingCustomer ? `${g.name}（顧客の登録が見つかりません）` : `${g.name}（顧客未登録）`;
+  const amount = document.createElement("span");
+  amount.textContent = `未出荷 ${formatKg(g.unshipped.remaining)}（${g.unshipped.items.map(i => `${i.label} ${formatKg(i.kg)}`).join("、")}）`;
+  head.append(title, amount);
+  // 空白を詰めると同じ名前になる顧客がすでにいれば、その人の可能性が高いので、新しく登録せず編集で選んでもらう
+  const squash = t => String(t || "").replace(/\s+/g, "");
+  const similar = customers.find(c => squash(c.name) === squash(g.name));
+  let guide = "";
+  if (g.missingCustomer) {
+    guide = "登録されていた顧客が見つかりません（削除された可能性があります）。「編集」で顧客を選び直してください。";
+  } else if (g.noName) {
+    guide = "名前が入っていません。「編集」で顧客を選んでください。";
+  } else if (similar) {
+    guide = `顧客管理に「${similar.name}」が登録されています。同じ人なら、「編集」でその顧客を選んでください。`;
+  } else if (g.hasSpacedName) {
+    guide = "名前の前後に空白が入っているため、顧客として登録しても結びつきません。「編集」で顧客を選ぶか、名前を直してください。";
+  } else {
+    const register = document.createElement("button");
+    register.type = "button";
+    register.className = "tool-button no-print";
+    register.textContent = "顧客として登録";
+    register.onclick = () => startCustomerRegistration(g.name);
+    head.appendChild(register);
+  }
+  wrap.appendChild(head);
+  if (guide) {
+    const p = document.createElement("p");
+    p.className = "section-help";
+    p.textContent = guide;
+    wrap.appendChild(p);
+  }
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "table-wrapper";
+  const table = document.createElement("table");
+  table.className = "card-table";
+  table.innerHTML = '<thead><tr><th>種類</th><th>品種</th><th>月・出荷日</th><th>kg</th><th class="no-print">編集</th><th class="no-print">削除</th></tr></thead>';
+  const body = document.createElement("tbody");
+  const row = (kind, item) => {
+    const tr = document.createElement("tr");
+    [["種類", kind === "rs" ? "予約" : "出荷"], ["品種", varietyLabel(item.variety)], ["月・出荷日", kind === "rs" ? monthLabel(item.month) : (item.date || "日付なし")], ["kg", formatKg(item.kg)]].forEach(([label, text]) => {
+      const td = document.createElement("td");
+      td.dataset.label = label;
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    const editTd = document.createElement("td");
+    editTd.className = "action-td";
+    editTd.innerHTML = '<button type="button" class="edit-button">編集</button>';
+    editTd.firstChild.onclick = () => (kind === "rs" ? openReservationEdit(item.id) : openShipmentEdit(item.id));
+    const deleteTd = document.createElement("td");
+    deleteTd.className = "action-td";
+    deleteTd.innerHTML = '<button type="button" class="delete-button">削除</button>';
+    deleteTd.firstChild.onclick = () => (kind === "rs" ? deleteReservationById(item.id) : deleteShipmentById(item.id));
+    tr.append(editTd, deleteTd);
+    body.appendChild(tr);
+  };
+  g.rs.forEach(r => row("rs", r));
+  g.ss.forEach(s => row("ss", s));
+  table.appendChild(body);
+  tableWrap.appendChild(table);
+  wrap.appendChild(tableWrap);
+  return wrap;
+}
+
+// id で予約・出荷を探して、編集フォームを開く（押したあとに一覧の並びが変わっていても、押したものを開くため）
+// 別のタブで変わっていたら、最新にしてから押し直してもらう（古い内容を編集させないため）
+function openReservationEdit(id) {
+  if (!ensureFresh()) return;
+  const i = reservations.findIndex(x => x.id === id);
+  if (i === -1) return;
+  switchView("reservationsView");
+  editReservation(i);
+  // 上に固定されたタブの帯に隠れないよう、フォームを画面の中ほどに出す
+  document.getElementById("reservationForm").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function openShipmentEdit(id) {
+  if (!ensureFresh()) return;
+  const i = shipments.findIndex(x => x.id === id);
+  if (i === -1) return;
+  switchView("shipmentsView");
+  editShipment(i);
+  document.getElementById("shipmentForm").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function deleteReservationById(id) {
+  const i = reservations.findIndex(x => x.id === id);
+  if (i !== -1) deleteReservation(i);
+}
+
+function deleteShipmentById(id) {
+  const i = shipments.findIndex(x => x.id === id);
+  if (i !== -1) deleteShipment(i);
+}
+
+// 顧客管理の登録フォームに名前を入れて開く（保存はしない。ふりがなを入れて「顧客を登録」を押してもらう）
+function startCustomerRegistration(name) {
+  if (!ensureFresh()) return;
+  // 別の顧客を編集している途中なら、入力を消してよいか確かめる
+  if (editingCustomerId !== null && !confirm("顧客の編集中です。編集中の内容を取り消して、新しい顧客の登録に切り替えますか？")) return;
+  switchView("customersView");
+  cancelCustomerEdit();
+  document.getElementById("customerName").value = name;
+  const furigana = document.getElementById("customerFurigana");
+  furigana.scrollIntoView({ behavior: "smooth", block: "center" });
+  furigana.focus();
+  notify(`ふりがなを入れて「顧客を登録」を押すと、「${name}」の予約・出荷がこの顧客に結びつきます`, "info", 8000);
+}
+
 function saveCustomer() {
   if (!ensureFresh()) return;
   const name = document.getElementById("customerName").value.trim();
@@ -1291,6 +1454,7 @@ function refreshAll() {
   displayShipments();
   displayCustomers();
   displayUnshippedCustomers();
+  displayUnlinkedUnshipped();
   refreshCustomerSelects();
   // 出荷の追加・削除で紐づく件数が変わったら、予約フォームの注意書きも合わせる
   updateCustomerLockNote();

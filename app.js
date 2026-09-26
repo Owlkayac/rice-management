@@ -1202,9 +1202,11 @@ function displayUnlinkedUnshipped() {
     const trimmed = rawName.trim();
     const key = missingCustomer ? `id:${item.customerId}` : `name:${trimmed}`;
     if (!groups.has(key)) {
-      groups.set(key, { name: trimmed || "（名前なし）", noName: !trimmed, missingCustomer, hasSpacedName: false, rs: [], ss: [] });
+      groups.set(key, { name: trimmed || "（名前なし）", noName: !trimmed, names: new Set(), missingCustomer, hasSpacedName: false, rs: [], ss: [] });
     }
     const g = groups.get(key);
+    // 顧客の id ごとのまとまりでは、予約・出荷によって名前の書き方が違うことがあるので、出てきた名前をすべて覚えておく
+    if (trimmed) g.names.add(trimmed);
     // 見出しの名前がまだ無ければ、名前の入った件で入れ直す（顧客の id ごとのまとまりで、最初の1件だけ名前が空の場合など）
     if (g.noName && trimmed) {
       g.name = trimmed;
@@ -1223,7 +1225,7 @@ function displayUnlinkedUnshipped() {
   // 上の一覧だけを見て「未出荷なし」と思わないように、未登録の分があることを上にも出す
   if (list.length) {
     const total = roundKg(list.reduce((a, g) => a + g.unshipped.remaining, 0));
-    const note = `ほかに、顧客に結びついていない予約が${list.length}人（名前）分（合計${formatKg(total)}）あります（下に表示）`;
+    const note = `ほかに、顧客に結びついていない予約・出荷の未出荷が合計${formatKg(total)}あります（下に表示）`;
     const summary = document.getElementById("unshippedCustomerSummary");
     if (summary) summary.textContent = summary.textContent ? `${summary.textContent}／${note}` : note;
     const empty = document.querySelector("#unshippedCustomerList .empty-message");
@@ -1238,7 +1240,10 @@ function unlinkedGroupElement(g) {
   const head = document.createElement("div");
   head.className = "unlinked-head";
   const title = document.createElement("strong");
-  title.textContent = g.missingCustomer ? `${g.name}（顧客の登録が見つかりません）` : `${g.name}（顧客未登録）`;
+  // 名前が何通りかあるときは、3つまで並べて、それより多ければ「ほか」を付ける
+  const names = [...g.names];
+  const shownName = names.length > 1 ? `${names.slice(0, 3).join("・")}${names.length > 3 ? " ほか" : ""}` : g.name;
+  title.textContent = g.missingCustomer ? `${shownName}（顧客の登録が見つかりません）` : `${shownName}（顧客未登録）`;
   const amount = document.createElement("span");
   amount.textContent = `未出荷 ${formatKg(g.unshipped.remaining)}（${g.unshipped.items.map(i => `${i.label} ${formatKg(i.kg)}`).join("、")}）`;
   head.append(title, amount);

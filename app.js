@@ -655,22 +655,23 @@ function displayReservations() {
 }
 
 function displayDashboard() {
-  const data = {};
-  varieties.forEach(v => data[v] = {});
-  reservations.forEach(r => data[r.variety] && (data[r.variety][r.month] = (data[r.variety][r.month] || 0) + (Number(r.kg) || 0)));
-  let grand = 0;
-  let html = "";
-  varieties.forEach(v => {
-    let sum = 0;
-    html += `<tr><th>${v}</th>` + months.map(m => {
-      const n = data[v][m] || 0;
-      sum += n;
-      return `<td>${formatKg(n)}</td>`;
-    }).join("") + `<td>${formatKg(sum)}</td></tr>`;
-    grand += sum;
-  });
-  html += `<tr class="grand-total-row"><th>全体</th>${months.map(m => `<td>${formatKg(reservations.filter(r => r.month === m).reduce((a, r) => a + (Number(r.kg) || 0), 0))}</td>`).join("")}<td>${formatKg(grand)}</td></tr>`;
+  const sumKg = list => list.reduce((a, r) => a + (Number(r.kg) || 0), 0);
+  // 合計は、品種や月が入っていない古い予約も含めて、すべての予約から数える
+  // （以前は A〜F・1月〜12月の予約だけを数えていたため、未出荷量が少なく出たり、在庫管理の予約量と合わなかったりした）
+  const rows = varieties.map(v => ({ label: v, list: reservations.filter(r => r.variety === v) }));
+  const unknownVariety = reservations.filter(r => !varieties.includes(r.variety));
+  if (unknownVariety.length) rows.push({ label: "品種なし・不明", list: unknownVariety });
+  let html = rows.map(({ label, list }) => `<tr><th>${esc(label)}</th>` + months.map(m => `<td>${formatKg(sumKg(list.filter(r => r.month === m)))}</td>`).join("") + `<td>${formatKg(sumKg(list))}</td></tr>`).join("");
+  const grand = sumKg(reservations);
+  html += `<tr class="grand-total-row"><th>全体</th>${months.map(m => `<td>${formatKg(sumKg(reservations.filter(r => r.month === m)))}</td>`).join("")}<td>${formatKg(grand)}</td></tr>`;
   document.getElementById("dashboardTableBody").innerHTML = html;
+  // 月が入っていない予約は月別の欄には出せないので、合計にだけ入っていることを知らせる
+  const noMonth = reservations.filter(r => !months.includes(r.month));
+  const note = document.getElementById("dashboardNote");
+  if (note) {
+    note.hidden = !noMonth.length;
+    note.textContent = noMonth.length ? `月が入っていない予約が${noMonth.length}件（${formatKg(sumKg(noMonth))}）あります。月別の欄には入らず、合計にだけ入っています。予約一覧で「月なし」の予約を編集して月を選んでください。` : "";
+  }
   document.getElementById("dashboardTotal").textContent = formatKg(grand);
   const rc = new Set(reservations.map(customerKey));
   const sc = new Set(shipments.map(customerKey));
@@ -680,7 +681,6 @@ function displayDashboard() {
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
   document.getElementById("dashboardUnshippedTotal").textContent = formatKg(grand - getShippedTotalsAll());
-  const sumKg = list => list.reduce((a, r) => a + (Number(r.kg) || 0), 0);
   document.getElementById("dashboardChannelBody").innerHTML = [...CHANNELS, ""].map(ch => {
     const list = reservations.filter(r => channelOf(r) === ch);
     return `<tr><td>${ch ? esc(ch) : "未設定"}</td><td>${list.length}件</td><td>${formatKg(sumKg(list))}</td></tr>`;

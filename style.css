@@ -164,6 +164,17 @@ button:active {
   overflow-x: auto;
 }
 
+/* ダッシュボードの表の下に出す補足 */
+.dashboard-note {
+  margin: 8px 0 16px;
+  padding: 8px 12px;
+  border-left: 4px solid #c08a00;
+  border-radius: 4px;
+  background: #fff3cd;
+  color: #5c4400;
+  font-size: 0.9em;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

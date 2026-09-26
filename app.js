@@ -729,6 +729,29 @@ function displayInventory() {
     };
     body.appendChild(tr);
   });
+  displayUnknownVarietyStock(body);
+}
+
+// 品種が入っていない（または不明な）予約・出荷は、どの品種の在庫とも結びつけられない。
+// 表から消えてしまわないように「品種なし」の行（不明な品種も含む）を足し、表の下で理由と直し方を知らせる
+function displayUnknownVarietyStock(body) {
+  const sumKg = list => list.reduce((a, x) => a + (Number(x.kg) || 0), 0);
+  const unknownReservations = reservations.filter(r => !varieties.includes(r.variety));
+  const unknownShipments = shipments.filter(s => !varieties.includes(s.variety));
+  if (unknownReservations.length) {
+    const tr = document.createElement("tr");
+    tr.className = "stock-unknown";
+    tr.innerHTML = '<th>品種なし</th><td data-label="在庫量">—</td><td data-label="予約量"></td><td data-label="単価(円/kg)">—</td><td data-label="残り在庫">—</td><td><span class="badge badge-low">要確認</span></td>';
+    tr.querySelector('[data-label="予約量"]').textContent = formatKg(sumKg(unknownReservations));
+    body.appendChild(tr);
+  }
+  const note = document.getElementById("inventoryNote");
+  if (!note) return;
+  const lines = [];
+  if (unknownReservations.length) lines.push(`品種が入っていない（または不明な）予約が${unknownReservations.length}件（${formatKg(sumKg(unknownReservations))}）あり、表の「品種なし」の行にまとめています。どの品種の在庫とも結びつけられないため、A〜F の行の予約量や残り在庫には入っていません。「予約登録・一覧」でこれらの予約を編集して品種を選んでください。`);
+  if (unknownShipments.length) lines.push(`品種が入っていない（または不明な）出荷が${unknownShipments.length}件（${formatKg(sumKg(unknownShipments))}）あります。品種ごとの出荷量に入らないため、出荷ベースの残り在庫にも反映されていません。「出荷管理」でこれらの出荷を編集して品種を選んでください。`);
+  note.hidden = !lines.length;
+  note.textContent = lines.join("\n");
 }
 
 function shipmentValues() {

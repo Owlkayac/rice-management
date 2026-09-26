@@ -179,6 +179,19 @@ button:active {
   background: #fff3cd;
   color: #5c4400;
   font-size: 0.9em;
+  /* 複数の注意を改行で分けて表示する */
+  white-space: pre-line;
+}
+
+/* 在庫管理の「品種なし・不明」の行（在庫と結びつけられない予約） */
+.stock-unknown td,
+.inventory-table .stock-unknown th {
+  background: #f7f7f7;
+  color: #555;
+}
+
+.inventory-table .stock-unknown th {
+  white-space: nowrap;
 }
 
 table {

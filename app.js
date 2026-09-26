@@ -98,6 +98,11 @@ function formatKg(v) {
   return `${Math.round((Number(v) || 0) * 100) / 100}kg`;
 }
 
+// 品種を表示用の文字にする（古いデータで品種が無いときに「undefined」と出ないように）。表示専用で、判定や保存には使わない
+function varietyLabel(v) {
+  return v || "品種なし";
+}
+
 function uid(prefix = "customer") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -167,7 +172,7 @@ function refreshShipmentReservationOptions(selectedReservationId) {
   const opts = ['<option value="">特定の予約に紐づけない</option>'];
   list.forEach(({ r, remaining }) => {
     if (remaining > 0 || r.id === selectedReservationId) {
-      opts.push(`<option value="${r.id}">${esc(r.variety)}・${esc(r.month)}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
+      opts.push(`<option value="${r.id}">${esc(varietyLabel(r.variety))}・${esc(r.month)}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
     }
   });
   sel.innerHTML = opts.join("");
@@ -204,7 +209,7 @@ function displayVarietyMismatches() {
   const ul = document.createElement("ul");
   list.forEach(({ s, r }) => {
     const li = document.createElement("li");
-    li.textContent = `${s.date || "日付なし"}・${customerName(s)}・${formatKg(s.kg)}：出荷の品種「${s.variety}」／予約の品種「${r.variety}」（予約：${r.month}・${formatKg(r.kg)}）`;
+    li.textContent = `${s.date || "日付なし"}・${customerName(s)}・${formatKg(s.kg)}：出荷の品種「${varietyLabel(s.variety)}」／予約の品種「${varietyLabel(r.variety)}」（予約：${r.month}・${formatKg(r.kg)}）`;
     ul.appendChild(li);
   });
   box.appendChild(ul);
@@ -392,7 +397,7 @@ function addReservation() {
     }
   };
   if (linked && before && before.variety !== r.variety) {
-    confirmThen(`この予約には出荷が${linked}件紐づいています。\n\n品種：${before.variety} → ${r.variety}\n\n紐づいた出荷の品種は変わらないため、予約と出荷の品種が食い違います。このまま保存しますか？`, checkStock);
+    confirmThen(`この予約には出荷が${linked}件紐づいています。\n\n品種：${varietyLabel(before.variety)} → ${varietyLabel(r.variety)}\n\n紐づいた出荷の品種は変わらないため、予約と出荷の品種が食い違います。このまま保存しますか？`, checkStock);
   } else {
     checkStock();
   }
@@ -504,7 +509,7 @@ function blockDeleteIfLinked(reservationId) {
   const linked = linkedShipments(reservationId);
   if (!linked.length) return false;
   // どの出荷を直せばよいか分かるように、出荷日・品種・kg を並べる（多いときは先頭の5件まで）
-  const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${s.variety || "品種なし"}・${formatKg(s.kg)}`).join("、");
+  const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${varietyLabel(s.variety)}・${formatKg(s.kg)}`).join("、");
   const more = linked.length > 5 ? `ほか${linked.length - 5}件` : "";
   notify(`この予約には出荷が${linked.length}件紐づいているため、削除できません（${list}${more}）。削除するには、先に「出荷管理」でこれらの出荷を編集して対象の予約を「特定の予約に紐づけない」にするか、その出荷を削除してください。`, "warn", 15000);
   return true;
@@ -719,7 +724,7 @@ function addShipment() {
       return;
     }
     if (linked.variety !== s.variety) {
-      notify(`出荷の品種「${s.variety}」が、選んだ予約の品種「${linked.variety}」と違います。品種か対象の予約を確かめてください`, "warn");
+      notify(`出荷の品種「${varietyLabel(s.variety)}」が、選んだ予約の品種「${varietyLabel(linked.variety)}」と違います。品種か対象の予約を確かめてください`, "warn");
       return;
     }
   }
@@ -727,7 +732,7 @@ function addShipment() {
   const original = editingShipmentId === null ? null : shipments.find(x => x.id === editingShipmentId);
   if (original && original.variety !== s.variety) {
     const hint = s.reservationId ? "\n\n品種は、紐づけた予約に合わせています。元の品種のままにするなら「キャンセル」を押し、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください。" : "";
-    confirmThen(`この出荷の品種を「${original.variety}」から「${s.variety}」に変えて保存しますか？${hint}`, () => commitShipment(s));
+    confirmThen(`この出荷の品種を「${varietyLabel(original.variety)}」から「${varietyLabel(s.variety)}」に変えて保存しますか？${hint}`, () => commitShipment(s));
     return;
   }
   commitShipment(s);
@@ -754,7 +759,7 @@ function commitShipment(s) {
     const linked = reservations.find(x => x.id === s.reservationId);
     if (linked && statusOf(linked) !== "shipped" && remainingForReservation(linked) <= 0) {
       const linkedId = linked.id;
-      confirmThen(`「${linked.variety}・${linked.month}・${formatKg(linked.kg)}」の予約は、紐づけられた出荷の合計で出荷し終えたようです。\n状態を「出荷済み」にしますか？`, () => {
+      confirmThen(`「${varietyLabel(linked.variety)}・${linked.month}・${formatKg(linked.kg)}」の予約は、紐づけられた出荷の合計で出荷し終えたようです。\n状態を「出荷済み」にしますか？`, () => {
         const target = reservations.find(x => x.id === linkedId);
         if (!target) return;
         target.status = "shipped";
@@ -781,7 +786,7 @@ function editShipment(i) {
   shipmentName.value = customer ? customer.name : s.name || "";
   refreshShipmentReservationOptions(s.reservationId);
   if (shipmentVariety.value !== s.variety) {
-    notify(`この出荷は、紐づけた予約と品種が違います（出荷「${s.variety}」／予約「${shipmentVariety.value}」）。品種を予約に合わせて「${shipmentVariety.value}」にしました。元の品種のままにするなら、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください`, "warn", 12000);
+    notify(`この出荷は、紐づけた予約と品種が違います（出荷「${varietyLabel(s.variety)}」／予約「${varietyLabel(shipmentVariety.value)}」）。品種を予約に合わせて「${varietyLabel(shipmentVariety.value)}」にしました。元の品種のままにするなら、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください`, "warn", 12000);
   }
   shipmentSubmitButton.textContent = "変更を保存";
   cancelShipmentEditButton.hidden = false;

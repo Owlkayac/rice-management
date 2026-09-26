@@ -295,6 +295,11 @@ function customerName(item) {
   return customerFor(item)?.name || item.name || "未登録";
 }
 
+// 同じ顧客かどうかを判定するためのキー（顧客が未登録なら名前で判定）
+function customerKey(item) {
+  return customerFor(item)?.customerId || `name:${String(item.name || "").trim()}`;
+}
+
 function findCustomer(customerId) {
   return customerId ? customers.find(c => c.customerId === customerId) : undefined;
 }
@@ -370,12 +375,36 @@ function addReservation() {
     notify("kgを入力してください", "warn");
     return;
   }
-  const warning = stockWarning(r, editingReservationId);
-  if (warning) {
-    confirmThen(warning, () => commitReservation(r));
+  const checkStock = () => {
+    const warning = stockWarning(r, editingReservationId);
+    if (warning) {
+      confirmThen(warning, () => commitReservation(r));
+    } else {
+      commitReservation(r);
+    }
+  };
+  const linkWarning = linkedShipmentWarning(r, editingReservationId);
+  if (linkWarning) {
+    confirmThen(linkWarning, checkStock);
   } else {
-    commitReservation(r);
+    checkStock();
   }
+}
+
+// 出荷が紐づいている予約の品種や顧客を変えるときの確認文（変えないときは空文字）
+function linkedShipmentWarning(r, id) {
+  if (id === null) return "";
+  const before = reservations.find(x => x.id === id);
+  if (!before) return "";
+  const count = shipments.filter(s => s.reservationId === id).length;
+  if (!count) return "";
+  const changes = [];
+  if (before.variety !== r.variety) changes.push(`品種：${before.variety} → ${r.variety}`);
+  const customerChanged = customerKey(before) !== customerKey(r);
+  if (customerChanged) changes.push(`顧客：${customerName(before)} → ${customerName(r)}`);
+  if (!changes.length) return "";
+  const note = customerChanged ? "あとで出荷を編集すると、予約との紐づけが外れることがあります。" : "";
+  return `この予約には出荷が${count}件紐づいています。\n\n${changes.join("\n")}\n\n紐づいた出荷の品種や顧客は変わらないため、予約と出荷の内容が食い違います。${note}\n\nこのまま保存しますか？`;
 }
 
 function commitReservation(r) {
@@ -548,8 +577,8 @@ function displayDashboard() {
   html += `<tr class="grand-total-row"><th>全体</th>${months.map(m => `<td>${formatKg(reservations.filter(r => r.month === m).reduce((a, r) => a + (Number(r.kg) || 0), 0))}</td>`).join("")}<td>${formatKg(grand)}</td></tr>`;
   document.getElementById("dashboardTableBody").innerHTML = html;
   document.getElementById("dashboardTotal").textContent = formatKg(grand);
-  const rc = new Set(reservations.map(r => customerFor(r)?.customerId || `name:${r.name}`));
-  const sc = new Set(shipments.map(r => customerFor(r)?.customerId || `name:${r.name}`));
+  const rc = new Set(reservations.map(customerKey));
+  const sc = new Set(shipments.map(customerKey));
   document.getElementById("dashboardCustomers").textContent = `${customers.length}人`;
   document.getElementById("dashboardReservationCustomerCount").textContent = `${rc.size}人`;
   document.getElementById("dashboardShipmentCustomerCount").textContent = `${sc.size}人`;

@@ -38,6 +38,8 @@ let prices = loadPrices();
 let stockMode = loadStockMode();
 // 編集中の予約・出荷は、配列の番号ではなく id で覚える（削除で番号がずれても別のデータを上書きしないため）
 let editingReservationId = null;
+// 予約の編集を始めたときにフォームに入れた顧客（紐づく出荷がある予約の顧客変更を止めるため）
+let editStartCustomer = null;
 let editingShipmentId = null;
 let editingCustomerId = null;
 // 他のタブの変更を取り込んだ回数（確認ダイアログの間に取り込みがあったかを見分けるため）
@@ -295,7 +297,7 @@ function customerName(item) {
   return customerFor(item)?.name || item.name || "未登録";
 }
 
-// 同じ顧客かどうかを判定するためのキー（顧客が未登録なら名前で判定）
+// 同じ顧客かどうかを判定するためのキー（customerFor で顧客が見つかればその id、見つからなければ前後の空白を除いた名前）
 function customerKey(item) {
   return customerFor(item)?.customerId || `name:${String(item.name || "").trim()}`;
 }
@@ -375,6 +377,12 @@ function addReservation() {
     notify("kgを入力してください", "warn");
     return;
   }
+  const linked = editingReservationId === null ? 0 : shipments.filter(s => s.reservationId === editingReservationId).length;
+  const before = reservations.find(x => x.id === editingReservationId);
+  if (linked && before && customerChangedSinceEditStart()) {
+    notify(`この予約には出荷が${linked}件紐づいているため、顧客は変更できません。${customerRestoreHint()}顧客を変えるには、先に紐づいた出荷を編集して、対象の予約を「特定の予約に紐づけない」にしてください。`, "warn", 12000);
+    return;
+  }
   const checkStock = () => {
     const warning = stockWarning(r, editingReservationId);
     if (warning) {
@@ -383,28 +391,30 @@ function addReservation() {
       commitReservation(r);
     }
   };
-  const linkWarning = linkedShipmentWarning(r, editingReservationId);
-  if (linkWarning) {
-    confirmThen(linkWarning, checkStock);
+  if (linked && before && before.variety !== r.variety) {
+    confirmThen(`この予約には出荷が${linked}件紐づいています。\n\n品種：${before.variety} → ${r.variety}\n\n紐づいた出荷の品種は変わらないため、予約と出荷の品種が食い違います。このまま保存しますか？`, checkStock);
   } else {
     checkStock();
   }
 }
 
-// 出荷が紐づいている予約の品種や顧客を変えるときの確認文（変えないときは空文字）
-function linkedShipmentWarning(r, id) {
-  if (id === null) return "";
-  const before = reservations.find(x => x.id === id);
-  if (!before) return "";
-  const count = shipments.filter(s => s.reservationId === id).length;
-  if (!count) return "";
-  const changes = [];
-  if (before.variety !== r.variety) changes.push(`品種：${before.variety} → ${r.variety}`);
-  const customerChanged = customerKey(before) !== customerKey(r);
-  if (customerChanged) changes.push(`顧客：${customerName(before)} → ${customerName(r)}`);
-  if (!changes.length) return "";
-  const note = customerChanged ? "あとで出荷を編集すると、予約との紐づけが外れることがあります。" : "";
-  return `この予約には出荷が${count}件紐づいています。\n\n${changes.join("\n")}\n\n紐づいた出荷の品種や顧客は変わらないため、予約と出荷の内容が食い違います。${note}\n\nこのまま保存しますか？`;
+// 編集を始めたときから、利用者が顧客を変えたか（フォームの値で判定する。保存データの顧客の引き当て方の違いで誤判定しないため）
+function customerChangedSinceEditStart() {
+  if (!editStartCustomer) return false;
+  const id = document.getElementById("customerSelect").value;
+  if (editStartCustomer.id || id) return id !== editStartCustomer.id;
+  return document.getElementById("name").value.trim() !== editStartCustomer.name;
+}
+
+// 顧客の変更を止めたときに、どう戻せばよいかを伝える文
+function customerRestoreHint() {
+  const before = editStartCustomer.id;
+  const now = document.getElementById("customerSelect").value;
+  const label = id => findCustomer(id)?.name || editStartCustomer.name;
+  if (!before && now) return `変えるつもりがなければ、顧客の選択を外して（未選択に戻して）、名前欄を「${editStartCustomer.name}」にしてください。`;
+  if (before && !now) return `顧客の選択が外れています。変えるつもりがなければ、顧客を「${label(before)}」に選び直してください。`;
+  if (before) return `（顧客：${label(before)} → ${label(now)}）変えるつもりがなければ、顧客を「${label(before)}」に選び直してください。`;
+  return `（名前：${editStartCustomer.name} → ${document.getElementById("name").value.trim()}）変えるつもりがなければ、名前欄を「${editStartCustomer.name}」に戻してください。`;
 }
 
 function commitReservation(r) {
@@ -441,12 +451,14 @@ function editReservation(i) {
   document.getElementById("customerSelect").value = customer ? customer.customerId : "";
   // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
   document.getElementById("name").value = customer ? customer.name : r.name || "";
+  editStartCustomer = { id: document.getElementById("customerSelect").value, name: document.getElementById("name").value.trim() };
   document.getElementById("submitButton").textContent = "変更を保存";
   document.getElementById("cancelEditButton").hidden = false;
 }
 
 function cancelEdit() {
   editingReservationId = null;
+  editStartCustomer = null;
   clearReservation();
   document.getElementById("channel").value = "";
   document.getElementById("submitButton").textContent = "予約を追加";

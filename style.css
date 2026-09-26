@@ -260,6 +260,18 @@ tbody tr:hover {
   font-size: 28px;
 }
 
+/* 予約より多く出荷しているときの補足（未出荷量をマイナスで出す代わりに添える） */
+.over-shipped {
+  display: block;
+  margin-top: 4px;
+  color: #8a5a00;
+  font-size: 13px;
+}
+
+.over-shipped[hidden] {
+  display: none;
+}
+
 .dashboard-cards {
   display: grid;
   grid-template-columns: repeat(4,1fr);

@@ -165,6 +165,18 @@ function formatKg(v) {
   return `${Math.round((Number(v) || 0) * 100) / 100}kg`;
 }
 
+// 予約量から出荷量を引いた「まだ出荷していない量」（小数の誤差を丸める）。マイナスなら、予約より多く出荷している
+function unshippedKg(reserved, shipped) {
+  return Math.round(((Number(reserved) || 0) - (Number(shipped) || 0)) * 100) / 100;
+}
+
+// 表のマスに入れる未出荷量（HTML）。マイナスにはせず0kgと出し、予約より多く出荷した分を下に小さく添える
+// （予約に紐づけていない出荷などで、出荷が予約を超えることがあるため。中身は数字だけなので innerHTML に入れてよい）
+function unshippedCellHtml(reserved, shipped) {
+  const rest = unshippedKg(reserved, shipped);
+  return rest >= 0 ? formatKg(rest) : `0kg<small class="over-shipped">${formatKg(-rest)}多く出荷</small>`;
+}
+
 // 品種を表示用の文字にする（古いデータで品種が無いときに「undefined」と出ないように）。
 // 品種が無い（undefined・null）ときも空文字のときも「品種なし」と表示する。表示専用で、保存には使わない
 function varietyLabel(v) {
@@ -806,7 +818,13 @@ function displayDashboard() {
   document.getElementById("dashboardShipmentCustomerCount").textContent = `${sc.size}人`;
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
-  document.getElementById("dashboardUnshippedTotal").textContent = formatKg(grand - getShippedTotalsAll());
+  const unshipped = unshippedKg(grand, getShippedTotalsAll());
+  document.getElementById("dashboardUnshippedTotal").textContent = formatKg(Math.max(unshipped, 0));
+  const unshippedNote = document.getElementById("dashboardUnshippedNote");
+  if (unshippedNote) {
+    unshippedNote.hidden = unshipped >= 0;
+    unshippedNote.textContent = unshipped < 0 ? `予約より${formatKg(-unshipped)}多く出荷しています` : "";
+  }
   document.getElementById("dashboardChannelBody").innerHTML = [...CHANNELS, ""].map(ch => {
     const list = reservations.filter(r => channelOf(r) === ch);
     return `<tr><td>${ch ? esc(ch) : "未設定"}</td><td>${list.length}件</td><td>${formatKg(sumKg(list))}</td></tr>`;
@@ -1047,16 +1065,24 @@ function displayShipments() {
   const r = getReservedTotals();
   const s = getShippedTotals();
   const body = document.getElementById("shipmentSummaryBody");
-  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${formatKg((r[v] || 0) - (s[v] || 0))}</td></tr>`);
+  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${unshippedCellHtml(r[v], s[v])}</td></tr>`);
   // 品種が入っていない（または不明な）予約・出荷も、表から消えないように「品種なし」の行にまとめる（在庫とは結びつけられないので在庫量は「—」）
   const unknownReservations = unknownVarietyItems(reservations);
   const unknownShipments = unknownVarietyItems(shipments);
   if (unknownReservations.length || unknownShipments.length) {
     const unknownReserved = sumKg(unknownReservations);
     const unknownShipped = sumKg(unknownShipments);
-    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${formatKg(unknownReserved - unknownShipped)}</td></tr>`);
+    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${unshippedCellHtml(unknownReserved, unknownShipped)}</td></tr>`);
   }
   body.innerHTML = rows.join("");
+}
+
+// 顧客の未出荷の表示。出荷し終えていれば「出荷完了」、予約より多く出荷していればその量も添える
+function unshippedCell(stats) {
+  const rest = unshippedKg(stats.reserved, stats.shipped);
+  if (rest > 0) return formatKg(rest);
+  const over = rest < 0 ? `<small class="over-shipped">予約より${formatKg(-rest)}多く出荷</small>` : "";
+  return `<span class="badge badge-done">出荷完了</span>${over}`;
 }
 
 function customerStats(c) {
@@ -1096,7 +1122,7 @@ function getVisibleCustomers() {
 
 function displayCustomers() {
   const arr = getVisibleCustomers();
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
   // ボタンの処理は onclick 属性に顧客の id を書き込まず、ここで結びつける
   // （読み込んだバックアップの id に細工があっても、スクリプトとして動かないようにするため）
   const rows = document.getElementById("customerList").querySelectorAll("tr");
@@ -1188,7 +1214,7 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div><button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div><button type="button" class="detail-close-button">詳細を閉じる</button>`;
   // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
   d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
   d.querySelector(".detail-close-button").onclick = () => d.hidden = true;

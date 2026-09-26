@@ -504,7 +504,7 @@ function blockDeleteIfLinked(reservationId) {
   const linked = linkedShipments(reservationId);
   if (!linked.length) return false;
   // どの出荷を直せばよいか分かるように、出荷日・品種・kg を並べる（多いときは先頭の5件まで）
-  const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${s.variety}・${formatKg(s.kg)}`).join("、");
+  const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${s.variety || "品種なし"}・${formatKg(s.kg)}`).join("、");
   const more = linked.length > 5 ? `ほか${linked.length - 5}件` : "";
   notify(`この予約には出荷が${linked.length}件紐づいているため、削除できません（${list}${more}）。削除するには、先に「出荷管理」でこれらの出荷を編集して対象の予約を「特定の予約に紐づけない」にするか、その出荷を削除してください。`, "warn", 15000);
   return true;

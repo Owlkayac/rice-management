@@ -580,7 +580,7 @@ function displayReservations() {
   body.innerHTML = "";
   getVisibleReservations().forEach(({ r, i }) => {
     const tr = document.createElement("tr");
-    [r.variety, r.month, customerName(r), formatKg(r.kg)].forEach((v, n) => {
+    [varietyLabel(r.variety), r.month, customerName(r), formatKg(r.kg)].forEach((v, n) => {
       const td = document.createElement("td");
       td.textContent = v;
       td.dataset.label = ["品種", "月", "名前", "kg"][n];
@@ -866,7 +866,7 @@ function displayShipments() {
   b.innerHTML = "";
   getVisibleShipments().forEach(({ s, i }) => {
     const tr = document.createElement("tr");
-    [s.date, s.variety, customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
+    [s.date, varietyLabel(s.variety), customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
       const td = document.createElement("td");
       td.textContent = v;
       td.dataset.label = ["出荷日", "品種", "顧客", "kg", "メモ"][n];
@@ -1128,6 +1128,8 @@ function buildDocRows(c) {
 }
 
 function printCustomerDoc(customerId, kind) {
+  // 別のタブで単価や出荷が変わっていたら、最新の内容にしてからやり直してもらう
+  if (!ensureFresh()) return;
   const c = customers.find(x => x.customerId === customerId);
   if (!c) return;
   const rows = buildDocRows(c);
@@ -1136,6 +1138,25 @@ function printCustomerDoc(customerId, kind) {
     return;
   }
   const title = kind === "invoice" ? "請求書" : "納品書";
+  // 品種が無い出荷は単価が決まらず、金額0円のまま気づかずに印刷されてしまうため、印刷を止めて直す出荷を知らせる
+  const noVariety = rows.filter(({ s }) => !varieties.includes(s.variety));
+  if (noVariety.length) {
+    const list = noVariety.slice(0, 5).map(({ s }) => `${s.date || "日付なし"}・${formatKg(s.kg)}`).join("、");
+    const more = noVariety.length > 5 ? `ほか${noVariety.length - 5}件` : "";
+    // 紐づけた予約にも品種が無いと、出荷の品種欄は予約に合わせて固定され選べないため、先に予約を直すよう案内する
+    const reservationToo = noVariety.some(({ s }) => {
+      const r = s.reservationId ? reservations.find(x => x.id === s.reservationId) : null;
+      return r && !varieties.includes(r.variety);
+    });
+    const how = reservationToo
+      ? "紐づけた予約にも品種が無いものがあります。先に「予約登録・一覧」でその予約の品種を選び、そのあと「出荷管理」で出荷を編集して品種を選んでください。"
+      : "「出荷管理」でこれらの出荷を編集して品種を選んでください。";
+    notify(`品種が未設定または不明な出荷が${noVariety.length}件あるため、${title}を印刷できません（${list}${more}）。${how}`, "warn", 15000);
+    return;
+  }
+  // 単価が0円（未入力）の品種があると、その分の金額が0円になる。サービス品などもあり得るので、確認してから印刷する
+  const zeroPrice = [...new Set(rows.filter(r => r.unit === 0).map(r => r.s.variety))];
+  if (zeroPrice.length && !confirm(`単価が0円の品種があります（${zeroPrice.join("、")}）。この品種の金額は0円になります。\n\n単価を入れる場合は「キャンセル」を押し、「在庫管理」で単価を入力してください。\nこのまま${title}を印刷しますか？`)) return;
   const total = rows.reduce((a, r) => a + r.amount, 0);
   const body = rows.map(({ s, unit, amount }) => `<tr><td>${esc(s.date)}</td><td>${esc(s.variety)}</td><td>${formatKg(s.kg)}</td><td>${yen(unit)}</td><td>${yen(amount)}</td></tr>`).join("");
   const doc = document.getElementById("docPrint");

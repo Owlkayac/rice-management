@@ -98,6 +98,18 @@ function formatKg(v) {
   return `${Math.round((Number(v) || 0) * 100) / 100}kg`;
 }
 
+// 品種を表示用の文字にする（古いデータで品種が無いときに「undefined」と出ないように）。
+// 品種が無い（undefined・null）ときも空文字のときも「品種なし」と表示する。表示専用で、保存には使わない
+function varietyLabel(v) {
+  return v || "品種なし";
+}
+
+// 2つの品種が同じかどうか。品種が無い（undefined・null）ものと空文字は同じ「品種なし」として扱う
+// （表示では同じ「品種なし」なのに「違う」と判定して、矛盾したメッセージが出ないように）
+function sameVariety(a, b) {
+  return (a || "") === (b || "");
+}
+
 function uid(prefix = "customer") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -167,7 +179,7 @@ function refreshShipmentReservationOptions(selectedReservationId) {
   const opts = ['<option value="">特定の予約に紐づけない</option>'];
   list.forEach(({ r, remaining }) => {
     if (remaining > 0 || r.id === selectedReservationId) {
-      opts.push(`<option value="${r.id}">${esc(r.variety)}・${esc(r.month)}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
+      opts.push(`<option value="${r.id}">${esc(varietyLabel(r.variety))}・${esc(r.month)}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
     }
   });
   sel.innerHTML = opts.join("");
@@ -182,13 +194,15 @@ function syncShipmentVarietyWithReservation() {
   const reservationId = document.getElementById("shipmentReservation").value;
   const linked = reservations.find(x => x.id === reservationId);
   if (linked) shipmentVariety.value = linked.variety;
+  // 品種が無い予約や古い出荷の後で品種欄が空のまま選べる状態に戻ったら、先頭の品種にする
+  if (!linked && !varieties.includes(shipmentVariety.value)) shipmentVariety.value = varieties[0];
   shipmentVariety.disabled = !!linked;
 }
 
 // 紐づけた予約と品種が違う出荷を探す（見つけるだけで、直さない）
 function findVarietyMismatches() {
   return shipments.map(s => ({ s, r: s.reservationId ? reservations.find(x => x.id === s.reservationId) : null }))
-    .filter(({ s, r }) => r && r.variety !== s.variety);
+    .filter(({ s, r }) => r && !sameVariety(r.variety, s.variety));
 }
 
 function displayVarietyMismatches() {
@@ -204,7 +218,7 @@ function displayVarietyMismatches() {
   const ul = document.createElement("ul");
   list.forEach(({ s, r }) => {
     const li = document.createElement("li");
-    li.textContent = `${s.date || "日付なし"}・${customerName(s)}・${formatKg(s.kg)}：出荷の品種「${s.variety}」／予約の品種「${r.variety}」（予約：${r.month}・${formatKg(r.kg)}）`;
+    li.textContent = `${s.date || "日付なし"}・${customerName(s)}・${formatKg(s.kg)}：出荷の品種「${varietyLabel(s.variety)}」／予約の品種「${varietyLabel(r.variety)}」（予約：${r.month}・${formatKg(r.kg)}）`;
     ul.appendChild(li);
   });
   box.appendChild(ul);
@@ -377,6 +391,11 @@ function addReservation() {
     notify("kgを入力してください", "warn");
     return;
   }
+  // 品種が空のまま保存すると、在庫や集計に入らず、請求書の単価も0円になるため止める
+  if (!varieties.includes(r.variety)) {
+    notify("品種を選んでください", "warn");
+    return;
+  }
   const linked = linkedShipmentCount(editingReservationId);
   const before = reservations.find(x => x.id === editingReservationId);
   if (linked && before && customerChangedSinceEditStart()) {
@@ -391,8 +410,8 @@ function addReservation() {
       commitReservation(r);
     }
   };
-  if (linked && before && before.variety !== r.variety) {
-    confirmThen(`この予約には出荷が${linked}件紐づいています。\n\n品種：${before.variety} → ${r.variety}\n\n紐づいた出荷の品種は変わらないため、予約と出荷の品種が食い違います。このまま保存しますか？`, checkStock);
+  if (linked && before && !sameVariety(before.variety, r.variety)) {
+    confirmThen(`この予約には出荷が${linked}件紐づいています。\n\n品種：${varietyLabel(before.variety)} → ${varietyLabel(r.variety)}\n\n紐づいた出荷の品種は変わらないため、予約と出荷の品種が食い違います。このまま保存しますか？`, checkStock);
   } else {
     checkStock();
   }
@@ -488,6 +507,8 @@ function clearReservation() {
   document.getElementById("name").value = "";
   document.getElementById("kg").value = "";
   document.getElementById("customerSelect").value = "";
+  // 品種が無い古い予約を編集した後は品種欄が空になっているので、先頭の品種に戻す
+  if (!varieties.includes(variety.value)) variety.value = varieties[0];
 }
 
 // 予約に紐づいている出荷の一覧と件数（予約の顧客変更・削除を止めるかどうかの判断に使う）
@@ -504,7 +525,7 @@ function blockDeleteIfLinked(reservationId) {
   const linked = linkedShipments(reservationId);
   if (!linked.length) return false;
   // どの出荷を直せばよいか分かるように、出荷日・品種・kg を並べる（多いときは先頭の5件まで）
-  const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${s.variety}・${formatKg(s.kg)}`).join("、");
+  const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${varietyLabel(s.variety)}・${formatKg(s.kg)}`).join("、");
   const more = linked.length > 5 ? `ほか${linked.length - 5}件` : "";
   notify(`この予約には出荷が${linked.length}件紐づいているため、削除できません（${list}${more}）。削除するには、先に「出荷管理」でこれらの出荷を編集して対象の予約を「特定の予約に紐づけない」にするか、その出荷を削除してください。`, "warn", 15000);
   return true;
@@ -529,7 +550,10 @@ function deleteReservation(i) {
 
 function totals(list, filter) {
   const r = {};
-  list.filter(filter || (() => true)).forEach(x => r[x.variety] = (r[x.variety] || 0) + (Number(x.kg) || 0));
+  list.filter(filter || (() => true)).forEach(x => {
+    const key = x.variety || "";
+    r[key] = (r[key] || 0) + (Number(x.kg) || 0);
+  });
   return r;
 }
 
@@ -556,7 +580,7 @@ function displayReservations() {
   body.innerHTML = "";
   getVisibleReservations().forEach(({ r, i }) => {
     const tr = document.createElement("tr");
-    [r.variety, r.month, customerName(r), formatKg(r.kg)].forEach((v, n) => {
+    [varietyLabel(r.variety), r.month, customerName(r), formatKg(r.kg)].forEach((v, n) => {
       const td = document.createElement("td");
       td.textContent = v;
       td.dataset.label = ["品種", "月", "名前", "kg"][n];
@@ -604,14 +628,17 @@ function displayReservations() {
   }
   const sums = {};
   reservations.forEach(r => {
-    const k = `${r.variety}_${r.month}`;
+    const k = `${r.variety || ""}_${r.month}`;
     sums[k] = (sums[k] || 0) + (Number(r.kg) || 0);
   });
   document.getElementById("summary").innerHTML = Object.entries(sums).sort(([a], [b]) => {
     const [va, ma] = a.split("_");
     const [vb, mb] = b.split("_");
     return varieties.indexOf(va) - varieties.indexOf(vb) || monthNumber(ma) - monthNumber(mb);
-  }).map(([k, v]) => `<div class="summary-item">${k.replace("_", "　")}　${formatKg(v)}</div>`).join("") || '<div class="empty-message">まだ予約がありません</div>';
+  }).map(([k, v]) => {
+    const [variety, month] = k.split("_");
+    return `<div class="summary-item">${esc(varietyLabel(variety))}　${esc(month)}　${formatKg(v)}</div>`;
+  }).join("") || '<div class="empty-message">まだ予約がありません</div>';
 }
 
 function displayDashboard() {
@@ -718,16 +745,25 @@ function addShipment() {
       refreshShipmentReservationOptions();
       return;
     }
-    if (linked.variety !== s.variety) {
-      notify(`出荷の品種「${s.variety}」が、選んだ予約の品種「${linked.variety}」と違います。品種か対象の予約を確かめてください`, "warn");
+    if (!varieties.includes(linked.variety)) {
+      notify("この予約には品種がありません。先に「予約登録・一覧」で予約を編集して品種を設定してください", "warn");
+      return;
+    }
+    if (!sameVariety(linked.variety, s.variety)) {
+      notify(`出荷の品種「${varietyLabel(s.variety)}」が、選んだ予約の品種「${varietyLabel(linked.variety)}」と違います。品種か対象の予約を確かめてください`, "warn");
       return;
     }
   }
+  // 品種が空のまま保存すると、在庫や集計に入らず、請求書の単価も0円になるため止める
+  if (!varieties.includes(s.variety)) {
+    notify("品種を選んでください", "warn");
+    return;
+  }
   // 編集で品種が変わるときは、保存する前に必ず確かめる（予約に合わせて自動で変わった場合に気づけるように）
   const original = editingShipmentId === null ? null : shipments.find(x => x.id === editingShipmentId);
-  if (original && original.variety !== s.variety) {
+  if (original && !sameVariety(original.variety, s.variety)) {
     const hint = s.reservationId ? "\n\n品種は、紐づけた予約に合わせています。元の品種のままにするなら「キャンセル」を押し、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください。" : "";
-    confirmThen(`この出荷の品種を「${original.variety}」から「${s.variety}」に変えて保存しますか？${hint}`, () => commitShipment(s));
+    confirmThen(`この出荷の品種を「${varietyLabel(original.variety)}」から「${varietyLabel(s.variety)}」に変えて保存しますか？${hint}`, () => commitShipment(s));
     return;
   }
   commitShipment(s);
@@ -754,7 +790,7 @@ function commitShipment(s) {
     const linked = reservations.find(x => x.id === s.reservationId);
     if (linked && statusOf(linked) !== "shipped" && remainingForReservation(linked) <= 0) {
       const linkedId = linked.id;
-      confirmThen(`「${linked.variety}・${linked.month}・${formatKg(linked.kg)}」の予約は、紐づけられた出荷の合計で出荷し終えたようです。\n状態を「出荷済み」にしますか？`, () => {
+      confirmThen(`「${varietyLabel(linked.variety)}・${linked.month}・${formatKg(linked.kg)}」の予約は、紐づけられた出荷の合計で出荷し終えたようです。\n状態を「出荷済み」にしますか？`, () => {
         const target = reservations.find(x => x.id === linkedId);
         if (!target) return;
         target.status = "shipped";
@@ -780,8 +816,9 @@ function editShipment(i) {
   // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
   shipmentName.value = customer ? customer.name : s.name || "";
   refreshShipmentReservationOptions(s.reservationId);
-  if (shipmentVariety.value !== s.variety) {
-    notify(`この出荷は、紐づけた予約と品種が違います（出荷「${s.variety}」／予約「${shipmentVariety.value}」）。品種を予約に合わせて「${shipmentVariety.value}」にしました。元の品種のままにするなら、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください`, "warn", 12000);
+  // 予約に紐づいている（品種欄が予約に合わせて固定されている）ときだけ、品種の食い違いを知らせる
+  if (shipmentVariety.disabled && !sameVariety(shipmentVariety.value, s.variety)) {
+    notify(`この出荷は、紐づけた予約と品種が違います（出荷「${varietyLabel(s.variety)}」／予約「${varietyLabel(shipmentVariety.value)}」）。品種を予約に合わせて「${varietyLabel(shipmentVariety.value)}」にしました。元の品種のままにするなら、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください`, "warn", 12000);
   }
   shipmentSubmitButton.textContent = "変更を保存";
   cancelShipmentEditButton.hidden = false;
@@ -829,7 +866,7 @@ function displayShipments() {
   b.innerHTML = "";
   getVisibleShipments().forEach(({ s, i }) => {
     const tr = document.createElement("tr");
-    [s.date, s.variety, customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
+    [s.date, varietyLabel(s.variety), customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
       const td = document.createElement("td");
       td.textContent = v;
       td.dataset.label = ["出荷日", "品種", "顧客", "kg", "メモ"][n];
@@ -966,10 +1003,10 @@ function editCustomer(id) {
 function showCustomerDetail(id) {
   const c = customers.find(x => x.customerId === id);
   const s = customerStats(c);
-  const list = o => Object.entries(o).map(([k, v]) => `<li>${k}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
+  const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','delivery')">納品書を印刷</button><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','invoice')">請求書を印刷</button></div><button onclick="document.getElementById('customerDetail').hidden=true">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','delivery')">納品書を印刷</button><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','invoice')">請求書を印刷</button></div><button onclick="document.getElementById('customerDetail').hidden=true">詳細を閉じる</button>`;
   d.scrollIntoView({ behavior: "smooth" });
 }
 
@@ -1091,6 +1128,8 @@ function buildDocRows(c) {
 }
 
 function printCustomerDoc(customerId, kind) {
+  // 別のタブで単価や出荷が変わっていたら、最新の内容にしてからやり直してもらう
+  if (!ensureFresh()) return;
   const c = customers.find(x => x.customerId === customerId);
   if (!c) return;
   const rows = buildDocRows(c);
@@ -1099,6 +1138,25 @@ function printCustomerDoc(customerId, kind) {
     return;
   }
   const title = kind === "invoice" ? "請求書" : "納品書";
+  // 品種が無い出荷は単価が決まらず、金額0円のまま気づかずに印刷されてしまうため、印刷を止めて直す出荷を知らせる
+  const noVariety = rows.filter(({ s }) => !varieties.includes(s.variety));
+  if (noVariety.length) {
+    const list = noVariety.slice(0, 5).map(({ s }) => `${s.date || "日付なし"}・${formatKg(s.kg)}`).join("、");
+    const more = noVariety.length > 5 ? `ほか${noVariety.length - 5}件` : "";
+    // 紐づけた予約にも品種が無いと、出荷の品種欄は予約に合わせて固定され選べないため、先に予約を直すよう案内する
+    const reservationToo = noVariety.some(({ s }) => {
+      const r = s.reservationId ? reservations.find(x => x.id === s.reservationId) : null;
+      return r && !varieties.includes(r.variety);
+    });
+    const how = reservationToo
+      ? "紐づけた予約にも品種が無いものがあります。先に「予約登録・一覧」でその予約の品種を選び、そのあと「出荷管理」で出荷を編集して品種を選んでください。"
+      : "「出荷管理」でこれらの出荷を編集して品種を選んでください。";
+    notify(`品種が未設定または不明な出荷が${noVariety.length}件あるため、${title}を印刷できません（${list}${more}）。${how}`, "warn", 15000);
+    return;
+  }
+  // 単価が0円（未入力）の品種があると、その分の金額が0円になる。サービス品などもあり得るので、確認してから印刷する
+  const zeroPrice = [...new Set(rows.filter(r => r.unit === 0).map(r => r.s.variety))];
+  if (zeroPrice.length && !confirm(`単価が0円の品種があります（${zeroPrice.join("、")}）。この品種の金額は0円になります。\n\n単価を入れる場合は「キャンセル」を押し、「在庫管理」で単価を入力してください。\nこのまま${title}を印刷しますか？`)) return;
   const total = rows.reduce((a, r) => a + r.amount, 0);
   const body = rows.map(({ s, unit, amount }) => `<tr><td>${esc(s.date)}</td><td>${esc(s.variety)}</td><td>${formatKg(s.kg)}</td><td>${yen(unit)}</td><td>${yen(amount)}</td></tr>`).join("");
   const doc = document.getElementById("docPrint");
@@ -1251,10 +1309,12 @@ function validateBackup(obj) {
       return { error: `${labels[key]}のデータが正しくありません` };
     }
   }
-  if (!d.reservations.every(r => isPlainObject(r) && typeof r.variety === "string")) {
+  // 品種が無い古いデータは、書き出すと品種の項目そのものが無くなる。それも読み込めるようにする
+  const varietyOk = v => v === undefined || v === null || typeof v === "string";
+  if (!d.reservations.every(r => isPlainObject(r) && varietyOk(r.variety))) {
     return { error: "予約のデータが正しくありません" };
   }
-  if (!d.shipments.every(s => isPlainObject(s) && typeof s.variety === "string")) {
+  if (!d.shipments.every(s => isPlainObject(s) && varietyOk(s.variety))) {
     return { error: "出荷のデータが正しくありません" };
   }
   if (!d.customers.every(c => isPlainObject(c) && typeof c.name === "string" && /^[A-Za-z0-9_-]+$/.test(String(c.customerId)))) {

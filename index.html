@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=16">
+    <link rel="stylesheet" href="style.css?v=17">
   </head>
   <body>
     <div class="container">
@@ -286,7 +286,16 @@
         </div>
         <h2>出荷集計</h2>
         <div class="table-wrapper">
-          <table>
+          <table class="shipment-summary-table">
+            <thead>
+              <tr>
+                <th>品種</th>
+                <th>在庫量</th>
+                <th>予約量</th>
+                <th>出荷量</th>
+                <th>未出荷</th>
+              </tr>
+            </thead>
             <tbody id="shipmentSummaryBody"></tbody>
           </table>
         </div>
@@ -368,6 +377,6 @@
     </div>
     <div id="docPrint" class="doc-print"></div>
     <div id="toastArea" class="toast-area" role="status" aria-live="polite"></div>
-    <script src="app.js?v=16"></script>
+    <script src="app.js?v=17"></script>
   </body>
 </html>

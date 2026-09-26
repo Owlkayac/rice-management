@@ -654,12 +654,22 @@ function displayReservations() {
   }).join("") || '<div class="empty-message">まだ予約がありません</div>';
 }
 
+// 予約・出荷の kg の合計
+function sumKg(list) {
+  return list.reduce((a, x) => a + (Number(x.kg) || 0), 0);
+}
+
+// 品種が入っていない（または A〜F 以外の不明な）予約・出荷を抜き出す。
+// ダッシュボード・在庫管理・出荷集計で同じ数え方にするため、ここにまとめる
+function unknownVarietyItems(list) {
+  return list.filter(x => !varieties.includes(x.variety));
+}
+
 function displayDashboard() {
-  const sumKg = list => list.reduce((a, r) => a + (Number(r.kg) || 0), 0);
   // 合計は、品種や月が入っていない古い予約も含めて、すべての予約から数える
   // （以前は A〜F・1月〜12月の予約だけを数えていたため、未出荷量が少なく出たり、在庫管理の予約量と合わなかったりした）
   const rows = varieties.map(v => ({ label: v, list: reservations.filter(r => r.variety === v) }));
-  const unknownVariety = reservations.filter(r => !varieties.includes(r.variety));
+  const unknownVariety = unknownVarietyItems(reservations);
   if (unknownVariety.length) rows.push({ label: "品種なし・不明", list: unknownVariety });
   let html = rows.map(({ label, list }) => `<tr><th>${esc(label)}</th>` + months.map(m => `<td>${formatKg(sumKg(list.filter(r => r.month === m)))}</td>`).join("") + `<td>${formatKg(sumKg(list))}</td></tr>`).join("");
   const grand = sumKg(reservations);
@@ -735,9 +745,8 @@ function displayInventory() {
 // 品種が入っていない（または不明な）予約・出荷は、どの品種の在庫とも結びつけられない。
 // 表から消えてしまわないように「品種なし」の行（不明な品種も含む）を足し、表の下で理由と直し方を知らせる
 function displayUnknownVarietyStock(body) {
-  const sumKg = list => list.reduce((a, x) => a + (Number(x.kg) || 0), 0);
-  const unknownReservations = reservations.filter(r => !varieties.includes(r.variety));
-  const unknownShipments = shipments.filter(s => !varieties.includes(s.variety));
+  const unknownReservations = unknownVarietyItems(reservations);
+  const unknownShipments = unknownVarietyItems(shipments);
   if (unknownReservations.length) {
     const tr = document.createElement("tr");
     tr.className = "stock-unknown";
@@ -922,7 +931,16 @@ function displayShipments() {
   const r = getReservedTotals();
   const s = getShippedTotals();
   const body = document.getElementById("shipmentSummaryBody");
-  body.innerHTML = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${formatKg((r[v] || 0) - (s[v] || 0))}</td></tr>`).join("");
+  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${formatKg((r[v] || 0) - (s[v] || 0))}</td></tr>`);
+  // 品種が入っていない（または不明な）予約・出荷も、表から消えないように「品種なし」の行にまとめる（在庫とは結びつけられないので在庫量は「—」）
+  const unknownReservations = unknownVarietyItems(reservations);
+  const unknownShipments = unknownVarietyItems(shipments);
+  if (unknownReservations.length || unknownShipments.length) {
+    const unknownReserved = sumKg(unknownReservations);
+    const unknownShipped = sumKg(unknownShipments);
+    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${formatKg(unknownReserved - unknownShipped)}</td></tr>`);
+  }
+  body.innerHTML = rows.join("");
 }
 
 function customerStats(c) {

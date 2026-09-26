@@ -272,6 +272,11 @@ tbody tr:hover {
   display: none;
 }
 
+/* 顧客の未出荷（数字やバッジと、その下の補足をひとまとめにする） */
+.unshipped-value {
+  display: inline-block;
+}
+
 .dashboard-cards {
   display: grid;
   grid-template-columns: repeat(4,1fr);

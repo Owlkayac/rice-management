@@ -170,6 +170,20 @@ function unshippedKg(reserved, shipped) {
   return Math.round(((Number(reserved) || 0) - (Number(shipped) || 0)) * 100) / 100;
 }
 
+// 品種ごと（A〜F と「品種なし」）に「予約−出荷」を出し、残っている分（0未満は0）の合計と、予約より多く出荷した分の合計を返す。
+// 品種をまたいで差し引くと、ある品種の出しすぎが別の品種の残りを打ち消し、残りを見落とすため、品種ごとに数える
+function unshippedByVariety(reservationList, shipmentList) {
+  const groups = [...varieties.map(v => x => x.variety === v), x => !varieties.includes(x.variety)];
+  let remaining = 0;
+  let over = 0;
+  groups.forEach(match => {
+    const rest = unshippedKg(sumKg(reservationList.filter(match)), sumKg(shipmentList.filter(match)));
+    if (rest > 0) remaining += rest;
+    else over -= rest;
+  });
+  return { remaining: roundKg(remaining), over: roundKg(over) };
+}
+
 // 表のマスに入れる未出荷量（HTML）。マイナスにはせず0kgと出し、予約より多く出荷した分を下に小さく添える
 // （予約に紐づけていない出荷などで、出荷が予約を超えることがあるため。中身は数字だけなので innerHTML に入れてよい）
 function unshippedCellHtml(reserved, shipped) {
@@ -818,12 +832,13 @@ function displayDashboard() {
   document.getElementById("dashboardShipmentCustomerCount").textContent = `${sc.size}人`;
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
-  const unshipped = unshippedKg(grand, getShippedTotalsAll());
-  document.getElementById("dashboardUnshippedTotal").textContent = formatKg(Math.max(unshipped, 0));
+  // 未出荷量は品種ごとの残りの合計（出荷集計の「未出荷」列の合計と同じ）
+  const unshipped = unshippedByVariety(reservations, shipments);
+  document.getElementById("dashboardUnshippedTotal").textContent = formatKg(unshipped.remaining);
   const unshippedNote = document.getElementById("dashboardUnshippedNote");
   if (unshippedNote) {
-    unshippedNote.hidden = unshipped >= 0;
-    unshippedNote.textContent = unshipped < 0 ? `予約より${formatKg(-unshipped)}多く出荷しています` : "";
+    unshippedNote.hidden = unshipped.over <= 0;
+    unshippedNote.textContent = unshipped.over > 0 ? `予約より多く出荷した品種があります（合計${formatKg(unshipped.over)}）` : "";
   }
   document.getElementById("dashboardChannelBody").innerHTML = [...CHANNELS, ""].map(ch => {
     const list = reservations.filter(r => channelOf(r) === ch);
@@ -1078,11 +1093,16 @@ function displayShipments() {
 }
 
 // 顧客の未出荷の表示。出荷し終えていれば「出荷完了」、予約より多く出荷していればその量も添える
+// 未出荷は品種ごとの残りの合計。「出荷完了」は、すべての品種で残りが0のときだけ出す。
+// 予約も出荷も無い顧客は「—」（取引が無いのに「完了」と見えないように）。
+// スマホの表ではマスの中身が横に並ぶので、1つの span にまとめて、補足がバッジや数字の下に来るようにする
 function unshippedCell(stats) {
-  const rest = unshippedKg(stats.reserved, stats.shipped);
-  if (rest > 0) return formatKg(rest);
-  const over = rest < 0 ? `<small class="over-shipped">予約より${formatKg(-rest)}多く出荷</small>` : "";
-  return `<span class="badge badge-done">出荷完了</span>${over}`;
+  if (!stats.rs.length && !stats.ss.length) return "—";
+  const main = stats.unshipped > 0 ? formatKg(stats.unshipped) : '<span class="badge badge-done">出荷完了</span>';
+  const note = stats.overShipped > 0
+    ? `<small class="over-shipped">${stats.unshipped > 0 ? "ほかに" : ""}予約より${formatKg(stats.overShipped)}多く出荷した品種あり</small>`
+    : "";
+  return `<span class="unshipped-value">${main}${note}</span>`;
 }
 
 function customerStats(c) {
@@ -1095,10 +1115,11 @@ function customerStats(c) {
     const key = r.month || "";
     month[key] = (month[key] || 0) + (Number(r.kg) || 0);
   });
-  const reserved = rs.reduce((a, r) => a + (Number(r.kg) || 0), 0);
-  const shipped = ss.reduce((a, s) => a + (Number(s.kg) || 0), 0);
+  const reserved = sumKg(rs);
+  const shipped = sumKg(ss);
+  const { remaining, over } = unshippedByVariety(rs, ss);
   return {
-    rs, ss, byV, shipV, month, reserved, shipped, unshipped: reserved - shipped
+    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over
   };
 }
 

@@ -133,9 +133,49 @@ function ensureIds(list, prefix, storageKey) {
   if (changed) save(storageKey, list);
 }
 
+// 顧客の id が無い、または使えない値なら、使える文字列の id に直す
+// （id が無いと、編集で顧客が2件に増えたり、削除で id の無い顧客がまとめて消えたりするため）。
+// 0以上の整数の id は文字列に直す（選択欄の値は文字列なので、数値のままだと選んでも見つからないため）
+function ensureCustomerIds() {
+  let changed = false;
+  customers.forEach(c => {
+    if (typeof c.customerId === "string" && SAFE_ID_PATTERN.test(c.customerId)) return;
+    replaceCustomerId(c, isLegacyNumericId(c.customerId) ? String(c.customerId) : uid());
+    changed = true;
+  });
+  if (!changed) return;
+  // 予約・出荷を先に保存する（顧客だけ保存できて予約・出荷の保存に失敗しても、数値の id なら次の起動で直せるように）
+  save("reservations", reservations);
+  save(SHIPMENTS_STORAGE_KEY, shipments);
+  save(CUSTOMERS_STORAGE_KEY, customers);
+}
+
+// 古いデータの数値の id として受け付ける値（0以上で、正確に表せる範囲の整数）
+function isLegacyNumericId(v) {
+  return Number.isSafeInteger(v) && v >= 0;
+}
+
+// 顧客の id を newId に置き換え、その顧客を指していた予約・出荷の customerId も合わせる
+function replaceCustomerId(c, newId) {
+  const oldId = c.customerId;
+  const hasOldId = oldId !== undefined && oldId !== null && oldId !== "" && oldId !== false;
+  const linked = [...reservations, ...shipments].filter(x => {
+    if (hasOldId) {
+      return x.customerId === oldId;
+    }
+    // id が無かった顧客は、今この顧客に名前でつながっている予約・出荷に id を書き込む（あとで名前を変えてもつながりが切れないように）
+    return !x.customerId && customerFor(x) === c;
+  });
+  c.customerId = newId;
+  linked.forEach(x => {
+    x.customerId = newId;
+  });
+}
+
 function ensureAllIds() {
   ensureIds(reservations, "reservation", "reservations");
   ensureIds(shipments, "shipment", SHIPMENTS_STORAGE_KEY);
+  ensureCustomerIds();
 }
 
 ensureAllIds();
@@ -1386,15 +1426,18 @@ function validateBackup(obj) {
   // id には英数字・「_」「-」だけを受け付ける（細工した文字が入ったファイルを読み込まないように）。
   // 古いデータで id が無いものは、読み込んだあとに付け直す
   const idOk = v => v === undefined || v === null || v === "" || (typeof v === "string" && SAFE_ID_PATTERN.test(v));
-  const badReservation = d.reservations.findIndex(r => !(isPlainObject(r) && varietyOk(r.variety) && idOk(r.id) && idOk(r.customerId)));
+  // 顧客の id は、使える文字の文字列のほか、古いデータに備えて「無し」と「0以上の整数」も受け付ける。
+  // どちらも読み込んだあとに ensureCustomerIds で文字列の id に直す
+  const customerIdOk = v => idOk(v) || isLegacyNumericId(v);
+  const badReservation = d.reservations.findIndex(r => !(isPlainObject(r) && varietyOk(r.variety) && idOk(r.id) && customerIdOk(r.customerId)));
   if (badReservation !== -1) {
     return { error: `予約のデータが正しくありません（${badReservation + 1}件目）` };
   }
-  const badShipment = d.shipments.findIndex(s => !(isPlainObject(s) && varietyOk(s.variety) && idOk(s.id) && idOk(s.customerId) && idOk(s.reservationId)));
+  const badShipment = d.shipments.findIndex(s => !(isPlainObject(s) && varietyOk(s.variety) && idOk(s.id) && customerIdOk(s.customerId) && idOk(s.reservationId)));
   if (badShipment !== -1) {
     return { error: `出荷のデータが正しくありません（${badShipment + 1}件目）` };
   }
-  const badCustomer = d.customers.findIndex(c => !(isPlainObject(c) && typeof c.name === "string" && SAFE_ID_PATTERN.test(String(c.customerId))));
+  const badCustomer = d.customers.findIndex(c => !(isPlainObject(c) && typeof c.name === "string" && customerIdOk(c.customerId)));
   if (badCustomer !== -1) {
     return { error: `顧客のデータが正しくありません（${badCustomer + 1}件目）` };
   }

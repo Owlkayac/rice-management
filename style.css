@@ -303,6 +303,23 @@ small {
   color: var(--muted);
 }
 
+/* 入力欄の近くに出す短い注意書き */
+.field-warning {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 4px solid #a00;
+  border-radius: 4px;
+  background: #ffdede;
+  color: #a00;
+  font-size: 0.9em;
+  font-weight: bold;
+}
+
+/* 注意書きを折り返すときは、ひとまとまりの言葉の途中では切らない */
+.field-warning span {
+  display: inline-block;
+}
+
 .stock-low td,
 .stock-low th {
   background: #fff3cd;

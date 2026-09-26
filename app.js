@@ -452,6 +452,7 @@ function editReservation(i) {
   // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
   document.getElementById("name").value = customer ? customer.name : r.name || "";
   editStartCustomer = { id: document.getElementById("customerSelect").value, name: document.getElementById("name").value.trim() };
+  updateCustomerLockNote();
   document.getElementById("submitButton").textContent = "変更を保存";
   document.getElementById("cancelEditButton").hidden = false;
 }
@@ -463,6 +464,24 @@ function cancelEdit() {
   document.getElementById("channel").value = "";
   document.getElementById("submitButton").textContent = "予約を追加";
   document.getElementById("cancelEditButton").hidden = true;
+  updateCustomerLockNote();
+}
+
+// 出荷が紐づいている予約を編集している間は、顧客欄の下に「顧客は変更できません」と出しておく
+function updateCustomerLockNote() {
+  const note = document.getElementById("customerLockNote");
+  // 古い index.html が残っていて要素が無いときは何もしない（ここで止まると予約の保存まで止まるため）
+  if (!note) return;
+  const count = editingReservationId === null ? 0 : shipments.filter(s => s.reservationId === editingReservationId).length;
+  note.hidden = !count;
+  note.textContent = "";
+  if (!count) return;
+  // 画面が狭いときは「、」のところで折り返すように、2つに分けて入れる
+  [`出荷が${count}件紐づいているため、`, "顧客は変更できません"].forEach(text => {
+    const span = document.createElement("span");
+    span.textContent = text;
+    note.appendChild(span);
+  });
 }
 
 function clearReservation() {
@@ -950,6 +969,8 @@ function refreshAll() {
   displayShipments();
   displayCustomers();
   refreshCustomerSelects();
+  // 出荷の追加・削除で紐づく件数が変わったら、予約フォームの注意書きも合わせる
+  updateCustomerLockNote();
   // 予約の追加・削除や顧客の変更を、出荷フォームの「対象の予約」にも反映する（選んでいた予約は残す）
   refreshShipmentReservationOptions(document.getElementById("shipmentReservation").value);
   showBackupStatus();

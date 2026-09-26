@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=12">
+    <link rel="stylesheet" href="style.css?v=13">
   </head>
   <body>
     <div class="container">
@@ -29,10 +29,11 @@
           </div>
           <div class="field">
             <label for="customerSelect">顧客</label>
-            <select id="customerSelect">
+            <select id="customerSelect" aria-describedby="customerLockNote">
               <option value="">顧客管理から登録してください</option>
             </select>
             <small>新規顧客は「顧客管理」から登録してください。</small>
+            <p id="customerLockNote" class="field-warning" hidden></p>
           </div>
           <div class="field">
             <label for="name">名前（自動入力・直接入力も可）</label>
@@ -364,6 +365,6 @@
     </div>
     <div id="docPrint" class="doc-print"></div>
     <div id="toastArea" class="toast-area" role="status" aria-live="polite"></div>
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=13"></script>
   </body>
 </html>

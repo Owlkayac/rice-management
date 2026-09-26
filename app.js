@@ -172,16 +172,26 @@ function unshippedKg(reserved, shipped) {
 
 // 品種ごと（A〜F と「品種なし」）に「予約−出荷」を出し、残っている分（0未満は0）の合計と、予約より多く出荷した分の合計を返す。
 // 品種をまたいで差し引くと、ある品種の出しすぎが別の品種の残りを打ち消し、残りを見落とすため、品種ごとに数える
+// items には、残りがある品種ごとの { label: 品種名, kg: 残り } が入る
 function unshippedByVariety(reservationList, shipmentList) {
-  const groups = [...varieties.map(v => x => x.variety === v), x => !varieties.includes(x.variety)];
+  // A〜F の7つめとして、A〜F 以外（品種なし・不明）のグループも数える
+  const groups = [
+    ...varieties.map(v => ({ label: v, match: x => x.variety === v })),
+    { label: "品種なし", match: x => !varieties.includes(x.variety) }
+  ];
   let remaining = 0;
   let over = 0;
-  groups.forEach(match => {
+  const items = [];
+  groups.forEach(({ label, match }) => {
     const rest = unshippedKg(sumKg(reservationList.filter(match)), sumKg(shipmentList.filter(match)));
-    if (rest > 0) remaining += rest;
-    else over -= rest;
+    if (rest > 0) {
+      remaining += rest;
+      items.push({ label, kg: rest });
+    } else {
+      over -= rest;
+    }
   });
-  return { remaining: roundKg(remaining), over: roundKg(over) };
+  return { remaining: roundKg(remaining), over: roundKg(over), items };
 }
 
 // 表のマスに入れる未出荷量（HTML）。マイナスにはせず0kgと出し、予約より多く出荷した分を下に小さく添える
@@ -1093,12 +1103,12 @@ function displayShipments() {
 }
 
 // 顧客の未出荷の表示。出荷し終えていれば「出荷完了」、予約より多く出荷していればその量も添える
-// 未出荷は品種ごとの残りの合計。「出荷完了」は、すべての品種で残りが0のときだけ出す。
-// 予約も出荷も無い顧客は「—」（取引が無いのに「完了」と見えないように）。
+// 未出荷は品種ごとの残りの合計。残りがあれば「未完」と残りの kg、すべての品種で残りが0なら「出荷完了」を出す。
 // スマホの表ではマスの中身が横に並ぶので、1つの span にまとめて、補足がバッジや数字の下に来るようにする
 function unshippedCell(stats) {
-  if (!stats.rs.length && !stats.ss.length) return "—";
-  const main = stats.unshipped > 0 ? formatKg(stats.unshipped) : '<span class="badge badge-done">出荷完了</span>';
+  const main = stats.unshipped > 0
+    ? `<span class="badge badge-pending">未完</span> ${formatKg(stats.unshipped)}`
+    : '<span class="badge badge-done">出荷完了</span>';
   const note = stats.overShipped > 0
     ? `<small class="over-shipped">${stats.unshipped > 0 ? "ほかに" : ""}予約より${formatKg(stats.overShipped)}多く出荷した品種あり</small>`
     : "";
@@ -1117,9 +1127,9 @@ function customerStats(c) {
   });
   const reserved = sumKg(rs);
   const shipped = sumKg(ss);
-  const { remaining, over } = unshippedByVariety(rs, ss);
+  const { remaining, over, items } = unshippedByVariety(rs, ss);
   return {
-    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over
+    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items
   };
 }
 
@@ -1153,6 +1163,25 @@ function displayCustomers() {
     tr.querySelector(".edit-button").onclick = () => editCustomer(c.customerId);
     tr.querySelector(".delete-button").onclick = () => deleteCustomer(c.customerId);
   });
+}
+
+// 「未出荷の顧客」タブ：顧客ごとの未出荷（品種ごとの残りの合計）が0より大きい顧客を、多い順に並べる
+function displayUnshippedCustomers() {
+  const body = document.getElementById("unshippedCustomerList");
+  if (!body) return;
+  const list = customers.map(c => ({ c, s: customerStats(c) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
+  body.innerHTML = list.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="未出荷">${formatKg(s.unshipped)}</td><td data-label="内訳">${esc(s.unshippedItems.map(i => `${i.label} ${formatKg(i.kg)}`).join("、"))}</td><td data-label="電話番号">${esc(c.phone)}</td><td class="action-td"><button class="detail-button">詳細</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty-message">未出荷の顧客はいません</td></tr>';
+  // 「詳細」は顧客管理タブの詳細を開く（顧客の id は onclick 属性に書き込まず、ここで結びつける）
+  const rows = body.querySelectorAll("tr");
+  list.forEach(({ c }, n) => {
+    rows[n].querySelector(".detail-button").onclick = () => {
+      switchView("customersView");
+      showCustomerDetail(c.customerId);
+    };
+  });
+  const summary = document.getElementById("unshippedCustomerSummary");
+  const total = roundKg(list.reduce((a, { s }) => a + s.unshipped, 0));
+  if (summary) summary.textContent = list.length ? `未出荷の顧客：${list.length}人（合計${formatKg(total)}）` : "";
 }
 
 function saveCustomer() {
@@ -1261,6 +1290,7 @@ function refreshAll() {
   displayInventory();
   displayShipments();
   displayCustomers();
+  displayUnshippedCustomers();
   refreshCustomerSelects();
   // 出荷の追加・削除で紐づく件数が変わったら、予約フォームの注意書きも合わせる
   updateCustomerLockNote();

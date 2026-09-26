@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=19">
+    <link rel="stylesheet" href="style.css?v=20">
   </head>
   <body>
     <div class="container">
@@ -15,6 +15,7 @@
         <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="dashboardView" data-view="dashboardView">ダッシュボード</button>
         <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="inventoryView" data-view="inventoryView">在庫管理</button>
         <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="shipmentsView" data-view="shipmentsView">出荷管理</button>
+        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="unshippedView" data-view="unshippedView">未出荷の顧客</button>
         <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="customersView" data-view="customersView">顧客管理</button>
       </nav>
       <main id="reservationsView" class="view-panel">
@@ -302,6 +303,29 @@
         </div>
       </main>
 
+      <main id="unshippedView" class="view-panel" hidden>
+        <h2>未出荷の顧客</h2>
+        <p class="section-help">まだ出荷していない分がある顧客です。未出荷は、顧客ごと・品種ごとに「予約−出荷」を出して、残りがある分だけを足した量です。出荷管理で登録した出荷だけを出荷済みとして数えます（予約の状態を「出荷済み」にしただけでは減りません）。ダッシュボードの未出荷量は全体を品種ごとに差し引くため、この合計と合わないことがあります。</p>
+        <p id="unshippedCustomerSummary" class="unshipped-summary"></p>
+        <div class="list-tools">
+          <button type="button" class="tool-button" onclick="printCurrentList()">この一覧を印刷</button>
+        </div>
+        <div class="table-wrapper">
+          <table class="card-table">
+            <thead>
+              <tr>
+                <th>顧客名</th>
+                <th>未出荷</th>
+                <th>内訳（品種ごとの残り）</th>
+                <th>電話番号</th>
+                <th class="no-print">詳細</th>
+              </tr>
+            </thead>
+            <tbody id="unshippedCustomerList"></tbody>
+          </table>
+        </div>
+      </main>
+
       <main id="customersView" class="view-panel" hidden>
         <h2>顧客管理</h2>
         <div class="form customer-form">
@@ -378,6 +402,6 @@
     </div>
     <div id="docPrint" class="doc-print"></div>
     <div id="toastArea" class="toast-area" role="status" aria-live="polite"></div>
-    <script src="app.js?v=19"></script>
+    <script src="app.js?v=20"></script>
   </body>
 </html>

@@ -111,12 +111,18 @@ textarea {
   background: #fff;
 }
 
-input:focus-visible,
+/* 操作できない欄（例：予約に合わせて固定した出荷の品種）は灰色にする。
+   文字は読めるように濃いめにし、iPhone で薄く表示されないようにする */
+input:disabled,
 select:disabled {
   background: #f2f2f2;
-  color: #888;
+  color: #555;
+  -webkit-text-fill-color: #555;
+  opacity: 1;
 }
 
+/* 入力中の欄には緑の枠を出す（背景は白のまま） */
+input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 button:focus-visible {
@@ -162,6 +168,30 @@ button:active {
 .table-wrapper,
 .dashboard-table-wrapper {
   overflow-x: auto;
+}
+
+/* ダッシュボードの表の下に出す補足 */
+.dashboard-note {
+  margin: 8px 0 16px;
+  padding: 8px 12px;
+  border-left: 4px solid #c08a00;
+  border-radius: 4px;
+  background: #fff3cd;
+  color: #5c4400;
+  font-size: 0.9em;
+  /* 複数の注意を改行で分けて表示する */
+  white-space: pre-line;
+}
+
+/* 在庫管理の「品種なし・不明」の行（在庫と結びつけられない予約） */
+.stock-unknown td,
+.inventory-table .stock-unknown th {
+  background: #f7f7f7;
+  color: #555;
+}
+
+.inventory-table .stock-unknown th {
+  white-space: nowrap;
 }
 
 table {

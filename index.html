@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=13">
+    <link rel="stylesheet" href="style.css?v=16">
   </head>
   <body>
     <div class="container">
@@ -147,11 +147,13 @@
                 <th>10月</th>
                 <th>11月</th>
                 <th>12月</th>
+                <th>合計</th>
               </tr>
             </thead>
             <tbody id="dashboardTableBody"></tbody>
           </table>
         </div>
+        <p id="dashboardNote" class="dashboard-note" hidden></p>
         <div class="dashboard-split">
           <section>
             <h2>受付経路別の予約</h2>
@@ -211,6 +213,7 @@
             <tbody id="inventoryList"></tbody>
           </table>
         </div>
+        <p id="inventoryNote" class="dashboard-note" hidden></p>
       </main>
 
       <main id="shipmentsView" class="view-panel" hidden>
@@ -365,6 +368,6 @@
     </div>
     <div id="docPrint" class="doc-print"></div>
     <div id="toastArea" class="toast-area" role="status" aria-live="polite"></div>
-    <script src="app.js?v=13"></script>
+    <script src="app.js?v=16"></script>
   </body>
 </html>

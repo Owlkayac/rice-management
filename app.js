@@ -40,6 +40,8 @@ let stockMode = loadStockMode();
 let editingReservationId = null;
 let editingShipmentId = null;
 let editingCustomerId = null;
+// 他のタブの変更を取り込んだ回数（確認ダイアログの間に取り込みがあったかを見分けるため）
+let reloadCount = 0;
 
 function read(k, f) {
   try {
@@ -297,7 +299,14 @@ function addReservation() {
     return;
   }
   const warning = stockWarning(r, editingReservationId);
-  if (warning && !confirm(warning)) return;
+  if (warning) {
+    confirmThen(warning, () => commitReservation(r));
+  } else {
+    commitReservation(r);
+  }
+}
+
+function commitReservation(r) {
   if (editingReservationId === null) {
     r.id = uid("reservation");
     r.status = "received";
@@ -349,12 +358,15 @@ function clearReservation() {
 
 function deleteReservation(i) {
   if (!ensureFresh()) return;
-  if (confirm("この予約を削除しますか？")) {
-    const [removed] = reservations.splice(i, 1);
-    if (removed.id === editingReservationId) cancelEdit();
+  const targetId = reservations[i].id;
+  confirmThen("この予約を削除しますか？", () => {
+    const index = reservations.findIndex(x => x.id === targetId);
+    if (index === -1) return;
+    reservations.splice(index, 1);
+    if (targetId === editingReservationId) cancelEdit();
     save("reservations", reservations);
     refreshAll();
-  }
+  });
 }
 
 function totals(list, filter) {
@@ -536,6 +548,14 @@ function addShipment() {
     notify("出荷日・顧客・出荷kgを入力してください", "warn");
     return;
   }
+  if (s.reservationId) {
+    const linked = reservations.find(x => x.id === s.reservationId);
+    if (!linked || !s.customerId || customerFor(linked)?.customerId !== s.customerId) {
+      notify("選んだ「対象の予約」がこの顧客の予約ではありません。顧客と対象の予約を選び直してください", "warn");
+      refreshShipmentReservationOptions();
+      return;
+    }
+  }
   if (editingShipmentId === null) {
     s.id = uid("shipment");
     shipments.push(s);
@@ -555,10 +575,14 @@ function addShipment() {
   if (s.reservationId) {
     const linked = reservations.find(x => x.id === s.reservationId);
     if (linked && statusOf(linked) !== "shipped" && remainingForReservation(linked) <= 0) {
-      if (confirm(`「${esc(linked.variety)}・${esc(linked.month)}・${formatKg(linked.kg)}」の予約は、紐づけられた出荷の合計で出荷し終えたようです。\n状態を「出荷済み」にしますか？`)) {
-        linked.status = "shipped";
+      const linkedId = linked.id;
+      confirmThen(`「${linked.variety}・${linked.month}・${formatKg(linked.kg)}」の予約は、紐づけられた出荷の合計で出荷し終えたようです。\n状態を「出荷済み」にしますか？`, () => {
+        const target = reservations.find(x => x.id === linkedId);
+        if (!target) return;
+        target.status = "shipped";
         save("reservations", reservations);
-      }
+        refreshAll();
+      });
     }
   }
   clearShipmentForm();
@@ -589,18 +613,22 @@ function cancelShipmentEdit() {
 function clearShipmentForm() {
   ["shipmentName", "shipmentKg", "shipmentMemo"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("shipmentDate").value = todayString();
-  refreshShipmentReservationOptions();
+  // 先に顧客の選択を空にしてから、予約の選択肢を作り直す（前の顧客の予約を残さない）
   shipmentCustomerSelect.value = "";
+  refreshShipmentReservationOptions();
 }
 
 function deleteShipment(i) {
   if (!ensureFresh()) return;
-  if (confirm("この出荷データを削除しますか？")) {
-    const [removed] = shipments.splice(i, 1);
-    if (removed.id === editingShipmentId) cancelShipmentEdit();
+  const targetId = shipments[i].id;
+  confirmThen("この出荷データを削除しますか？", () => {
+    const index = shipments.findIndex(x => x.id === targetId);
+    if (index === -1) return;
+    shipments.splice(index, 1);
+    if (targetId === editingShipmentId) cancelShipmentEdit();
     save(SHIPMENTS_STORAGE_KEY, shipments);
     refreshAll();
-  }
+  });
 }
 
 function getVisibleShipments() {
@@ -689,8 +717,13 @@ function saveCustomer() {
   const original = editingCustomerId ? customers.find(x => x.customerId === editingCustomerId) : null;
   const nameChanged = !original || squash(original.name) !== squash(name);
   if (nameChanged && customers.some(x => x.customerId !== editingCustomerId && squash(x.name) === squash(name))) {
-    if (!confirm(`「${name}」という名前の顧客がすでに登録されています。\n同じ人なら、新しく登録せず既存の顧客を使ってください。\n別の人として、このまま保存しますか？`)) return;
+    confirmThen(`「${name}」という名前の顧客がすでに登録されています。\n同じ人なら、新しく登録せず既存の顧客を使ってください。\n別の人として、このまま保存しますか？`, () => commitCustomer(name, furigana));
+  } else {
+    commitCustomer(name, furigana);
   }
+}
+
+function commitCustomer(name, furigana) {
   const c = {
     customerId: editingCustomerId || uid(), name, furigana, phone: document.getElementById("customerPhone").value.trim(), address: document.getElementById("customerAddress").value.trim(), memo: document.getElementById("customerMemo").value.trim()
   };
@@ -722,11 +755,11 @@ function deleteCustomer(id) {
     notify("この顧客には予約または出荷データが存在します。関連データを先に確認してください。", "warn");
     return;
   }
-  if (confirm(`${c.name}を削除しますか？`)) {
+  confirmThen(`${c.name}を削除しますか？`, () => {
     customers = customers.filter(x => x.customerId !== id);
     save(CUSTOMERS_STORAGE_KEY, customers);
     refreshAll();
-  }
+  });
 }
 
 function editCustomer(id) {
@@ -772,6 +805,8 @@ function refreshAll() {
   displayShipments();
   displayCustomers();
   refreshCustomerSelects();
+  // 予約の追加・削除や顧客の変更を、出荷フォームの「対象の予約」にも反映する（選んでいた予約は残す）
+  refreshShipmentReservationOptions(document.getElementById("shipmentReservation").value);
   showBackupStatus();
 }
 
@@ -788,6 +823,7 @@ function reloadFromStorage() {
   inventory = loadInventory();
   prices = loadPrices();
   STORAGE_KEYS.forEach(k => lastSeen[k] = rawGet(k));
+  reloadCount++;
   ensureAllIds();
   if (editingReservationId !== null) cancelEdit();
   if (editingShipmentId !== null) cancelShipmentEdit();
@@ -803,6 +839,31 @@ function ensureFresh() {
   reloadFromStorage();
   notify("別のタブや画面でデータが更新されていたため、最新の内容に更新しました。もう一度操作してください。", "warn");
   return false;
+}
+
+// 確認ダイアログで「OK」が押されたら action を実行する。
+// ダイアログを開いている間に別のタブで保存された内容は、ダイアログを閉じた直後にはまだ届いていない。
+// そのため setTimeout で一呼吸おいてから最新かどうかを確かめ、古ければ保存しない（別のタブの変更を消さないため）。
+// ※「一呼吸おけば届いている」は Chrome で試して確かめた動きで、どのブラウザでも必ずそうなるとは限らない。
+// ダイアログの間に別のタブの変更を取り込んでいた場合（reloadCount が増えた場合）も、確認した内容と違うので保存しない。
+function confirmThen(message, action, onStop) {
+  const countBefore = reloadCount;
+  if (!confirm(message)) {
+    if (onStop) onStop();
+    return;
+  }
+  setTimeout(() => {
+    if (!ensureFresh()) {
+      if (onStop) onStop();
+      return;
+    }
+    if (reloadCount !== countBefore) {
+      notify("確認中に別のタブでデータが更新されたため、この操作は実行しませんでした。内容を確かめて、もう一度操作してください。", "warn");
+      if (onStop) onStop();
+      return;
+    }
+    action();
+  }, 0);
 }
 
 function syncFromOtherTab() {
@@ -1068,12 +1129,10 @@ function importBackup(event) {
     }
     const d = result.data;
     const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
-    if (!confirm(message)) {
-      finish();
-      return;
-    }
-    applyBackup(d);
-    finish("バックアップを読み込みました", "success");
+    confirmThen(message, () => {
+      applyBackup(d);
+      finish("バックアップを読み込みました", "success");
+    }, () => finish());
   };
   reader.readAsText(file);
 }

@@ -6,6 +6,8 @@ const LAST_BACKUP_STORAGE_KEY = "lastBackupAt";
 const BACKUP_APP_NAME = "rice-reservation-backup";
 const BACKUP_VERSION = 1;
 const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+// 予約・出荷・顧客の id として受け付ける文字（英数字・「_」「-」）
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const RESERVATION_SORT_KEY = "reservationSort";
 const SHIPMENT_SORT_KEY = "shipmentSort";
 const RESERVATION_SORTS = ["recent", "month", "variety", "name", "kg"];
@@ -184,7 +186,7 @@ function refreshShipmentReservationOptions(selectedReservationId) {
   const opts = ['<option value="">特定の予約に紐づけない</option>'];
   list.forEach(({ r, remaining }) => {
     if (remaining > 0 || r.id === selectedReservationId) {
-      opts.push(`<option value="${r.id}">${esc(varietyLabel(r.variety))}・${esc(monthLabel(r.month))}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
+      opts.push(`<option value="${esc(r.id)}">${esc(varietyLabel(r.variety))}・${esc(monthLabel(r.month))}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
     }
   });
   sel.innerHTML = opts.join("");
@@ -350,7 +352,7 @@ function detachCustomerIfRenamed(selectId, nameId) {
 // 選んでいた顧客が消えていたら名前欄も空にする（名前欄と選択の食い違いを残さないため）
 function refreshCustomerSelects() {
   const placeholder = customers.length ? "顧客を選択してください" : "顧客管理から登録してください";
-  const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${c.customerId}">${esc(c.name)}</option>`).join("");
+  const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${esc(c.customerId)}">${esc(c.name)}</option>`).join("");
   [["customerSelect", "name"], ["shipmentCustomerSelect", "shipmentName"]].forEach(([id, nameId]) => {
     const e = document.getElementById(id);
     const nameInput = document.getElementById(nameId);
@@ -980,7 +982,16 @@ function getVisibleCustomers() {
 
 function displayCustomers() {
   const arr = getVisibleCustomers();
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td class="action-td"><button class="detail-button" onclick="showCustomerDetail('${c.customerId}')">詳細</button></td><td class="action-td"><button class="edit-button" onclick="editCustomer('${c.customerId}')">編集</button></td><td class="action-td"><button class="delete-button" onclick="deleteCustomer('${c.customerId}')">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  // ボタンの処理は onclick 属性に顧客の id を書き込まず、ここで結びつける
+  // （読み込んだバックアップの id に細工があっても、スクリプトとして動かないようにするため）
+  const rows = document.getElementById("customerList").querySelectorAll("tr");
+  arr.forEach(({ c }, n) => {
+    const tr = rows[n];
+    tr.querySelector(".detail-button").onclick = () => showCustomerDetail(c.customerId);
+    tr.querySelector(".edit-button").onclick = () => editCustomer(c.customerId);
+    tr.querySelector(".delete-button").onclick = () => deleteCustomer(c.customerId);
+  });
 }
 
 function saveCustomer() {
@@ -1063,7 +1074,10 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','delivery')">納品書を印刷</button><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','invoice')">請求書を印刷</button></div><button onclick="document.getElementById('customerDetail').hidden=true">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div><button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
+  d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
+  d.querySelector(".detail-close-button").onclick = () => d.hidden = true;
   d.scrollIntoView({ behavior: "smooth" });
 }
 
@@ -1368,14 +1382,21 @@ function validateBackup(obj) {
   }
   // 品種が無い古いデータは、書き出すと品種の項目そのものが無くなる。それも読み込めるようにする
   const varietyOk = v => v === undefined || v === null || typeof v === "string";
-  if (!d.reservations.every(r => isPlainObject(r) && varietyOk(r.variety))) {
-    return { error: "予約のデータが正しくありません" };
+  // 画面への表示は esc() や textContent で守っているが、念のための二重の守りとして、
+  // id には英数字・「_」「-」だけを受け付ける（細工した文字が入ったファイルを読み込まないように）。
+  // 古いデータで id が無いものは、読み込んだあとに付け直す
+  const idOk = v => v === undefined || v === null || v === "" || (typeof v === "string" && SAFE_ID_PATTERN.test(v));
+  const badReservation = d.reservations.findIndex(r => !(isPlainObject(r) && varietyOk(r.variety) && idOk(r.id) && idOk(r.customerId)));
+  if (badReservation !== -1) {
+    return { error: `予約のデータが正しくありません（${badReservation + 1}件目）` };
   }
-  if (!d.shipments.every(s => isPlainObject(s) && varietyOk(s.variety))) {
-    return { error: "出荷のデータが正しくありません" };
+  const badShipment = d.shipments.findIndex(s => !(isPlainObject(s) && varietyOk(s.variety) && idOk(s.id) && idOk(s.customerId) && idOk(s.reservationId)));
+  if (badShipment !== -1) {
+    return { error: `出荷のデータが正しくありません（${badShipment + 1}件目）` };
   }
-  if (!d.customers.every(c => isPlainObject(c) && typeof c.name === "string" && /^[A-Za-z0-9_-]+$/.test(String(c.customerId)))) {
-    return { error: "顧客のデータが正しくありません" };
+  const badCustomer = d.customers.findIndex(c => !(isPlainObject(c) && typeof c.name === "string" && SAFE_ID_PATTERN.test(String(c.customerId))));
+  if (badCustomer !== -1) {
+    return { error: `顧客のデータが正しくありません（${badCustomer + 1}件目）` };
   }
   if (!isPlainObject(d.inventory)) {
     return { error: "在庫のデータが正しくありません" };

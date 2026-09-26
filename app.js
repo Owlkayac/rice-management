@@ -6,6 +6,8 @@ const LAST_BACKUP_STORAGE_KEY = "lastBackupAt";
 const BACKUP_APP_NAME = "rice-reservation-backup";
 const BACKUP_VERSION = 1;
 const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+// 予約・出荷・顧客の id として受け付ける文字（英数字・「_」「-」）
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const RESERVATION_SORT_KEY = "reservationSort";
 const SHIPMENT_SORT_KEY = "shipmentSort";
 const RESERVATION_SORTS = ["recent", "month", "variety", "name", "kg"];
@@ -74,6 +76,10 @@ function notify(message, type = "info", duration = 5000) {
 }
 
 let lastSaveWarningAt = 0;
+// 起動時などに付けた id を、まだ保存できていないとき true（予約・出荷・顧客のつながりを切らないため、
+// この間は3つのどれを保存するときも、3つまとめて保存する）
+let idsNotSaved = false;
+const ID_LINKED_KEYS = ["reservations", SHIPMENTS_STORAGE_KEY, CUSTOMERS_STORAGE_KEY];
 
 function warnSaveFailed() {
   const now = Date.now();
@@ -82,7 +88,15 @@ function warnSaveFailed() {
   notify("保存できませんでした。この変更は保存されていません。\nブラウザの保存容量がいっぱいか、プライベートブラウズ中の可能性があります。「データを書き出す」でバックアップを取ってください。", "error", 10000);
 }
 
+// 予約・出荷・顧客は、必ず画面のデータ（reservations・shipments・customers）に反映してから、その変数を渡して保存すること。
+// id の保存待ちの間は、渡した v ではなく、この3つの変数がまとめて保存されるため
 function save(k, v) {
+  // 付けた id がまだ保存できていない間は、予約・出荷・顧客をまとめて保存する（1つだけ保存して、つながりが切れないように）
+  if (idsNotSaved && ID_LINKED_KEYS.includes(k)) {
+    if (saveIdLinkedData()) return true;
+    warnSaveFailed();
+    return false;
+  }
   const text = JSON.stringify(v);
   try {
     localStorage.setItem(k, text);
@@ -92,6 +106,59 @@ function save(k, v) {
     warnSaveFailed();
     return false;
   }
+}
+
+// 複数のデータをまとめて保存する。どれか1つでも保存に失敗したら、先に保存したものも元の中身に戻して false を返す
+// （容量不足などで途中まで保存され、「予約は新しいのに顧客は古い」ような食い違いが残らないようにするため）。
+// 失敗の通知は呼び出す側で出す
+function saveAll(entries) {
+  const written = [];
+  try {
+    entries.forEach(([k, v]) => {
+      const before = rawGet(k);
+      const text = JSON.stringify(v);
+      localStorage.setItem(k, text);
+      lastSeen[k] = text;
+      written.push({ k, before, text });
+    });
+    return true;
+  } catch {
+    // 元に戻すのは、書き込めたキーだけ（書き込めなかったキーは元の中身のまま残っている）。
+    // 先に書き込んだキーを消して容量を空けてから、元の中身を書き戻す
+    written.forEach(({ k }) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        // 消せなくても、書き戻しは続ける
+      }
+    });
+    let restored = true;
+    written.forEach(({ k, before, text }) => {
+      try {
+        if (before !== null) localStorage.setItem(k, before);
+      } catch {
+        restored = false;
+        // 元に戻せないときも、そのキーを空のままにしない（さっき書き込めた新しい中身を書き直す）
+        try {
+          localStorage.setItem(k, text);
+        } catch {
+          // ここまで失敗したら、どうにもできない
+        }
+      }
+      lastSeen[k] = rawGet(k);
+    });
+    if (!restored) {
+      notify("保存に失敗し、元のデータにも戻せませんでした。データが食い違っている可能性があります。すぐに「データを書き出す」でバックアップを取り、内容を確かめてください。", "error", 20000);
+    }
+    return false;
+  }
+}
+
+// 予約・出荷・顧客をまとめて保存する。保存できたら、付けた id の保存待ちを解く
+function saveIdLinkedData() {
+  if (!saveAll([["reservations", reservations], [SHIPMENTS_STORAGE_KEY, shipments], [CUSTOMERS_STORAGE_KEY, customers]])) return false;
+  idsNotSaved = false;
+  return true;
 }
 
 function formatKg(v) {
@@ -119,8 +186,8 @@ function uid(prefix = "customer") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// id が無い古いデータに id を付ける
-function ensureIds(list, prefix, storageKey) {
+// id が無い古いデータに id を付ける（保存はしない。付けたら true を返す）
+function fillMissingIds(list, prefix) {
   let changed = false;
   list.forEach(x => {
     if (!x.id) {
@@ -128,12 +195,61 @@ function ensureIds(list, prefix, storageKey) {
       changed = true;
     }
   });
-  if (changed) save(storageKey, list);
+  return changed;
 }
 
-function ensureAllIds() {
-  ensureIds(reservations, "reservation", "reservations");
-  ensureIds(shipments, "shipment", SHIPMENTS_STORAGE_KEY);
+// 顧客の id が無い、または使えない値なら、使える文字列の id に直す
+// （id が無いと、編集で顧客が2件に増えたり、削除で id の無い顧客がまとめて消えたりするため）。
+// 0以上の整数の id は文字列に直す（選択欄の値は文字列なので、数値のままだと選んでも見つからないため）
+// 保存はしない。直したら true を返す
+function fixCustomerIds() {
+  let changed = false;
+  customers.forEach(c => {
+    if (typeof c.customerId === "string" && SAFE_ID_PATTERN.test(c.customerId)) return;
+    replaceCustomerId(c, isLegacyNumericId(c.customerId) ? String(c.customerId) : uid());
+    changed = true;
+  });
+  return changed;
+}
+
+// 古いデータの数値の id として受け付ける値（0以上で、正確に表せる範囲の整数）
+function isLegacyNumericId(v) {
+  return Number.isSafeInteger(v) && v >= 0;
+}
+
+// 顧客の id を newId に置き換え、その顧客を指していた予約・出荷の customerId も合わせる
+function replaceCustomerId(c, newId) {
+  const oldId = c.customerId;
+  // 「id が無い」は undefined・null・空文字・false だけ（0 は古いデータの数値の id として扱う）
+  const hasId = v => v !== undefined && v !== null && v !== "" && v !== false;
+  const linked = [...reservations, ...shipments].filter(x => {
+    if (hasId(oldId)) {
+      return x.customerId === oldId;
+    }
+    // id が無かった顧客は、今この顧客に名前でつながっている予約・出荷に id を書き込む（あとで名前を変えてもつながりが切れないように）
+    return !hasId(x.customerId) && customerFor(x) === c;
+  });
+  c.customerId = newId;
+  linked.forEach(x => {
+    x.customerId = newId;
+  });
+}
+
+// 予約・出荷・顧客に足りない id を付ける。persist が true なら、3つをまとめて保存する。
+// 保存に失敗しても、画面のデータには付けた id を残す（id が無いと、編集・削除で別のデータを操作してしまうため）。
+// その代わり idsNotSaved を立て、次にどれかを保存するときに3つまとめて保存し直す
+function ensureAllIds(persist = true) {
+  const reservationsChanged = fillMissingIds(reservations, "reservation");
+  const shipmentsChanged = fillMissingIds(shipments, "shipment");
+  const customersChanged = fixCustomerIds();
+  if (!persist) return;
+  if (!(reservationsChanged || shipmentsChanged || customersChanged)) {
+    // 読み込んだばかりの保存データに直すところが無い＝画面と保存の id はそろっている
+    idsNotSaved = false;
+    return;
+  }
+  idsNotSaved = true;
+  if (!saveIdLinkedData()) warnSaveFailed();
 }
 
 ensureAllIds();
@@ -184,7 +300,7 @@ function refreshShipmentReservationOptions(selectedReservationId) {
   const opts = ['<option value="">特定の予約に紐づけない</option>'];
   list.forEach(({ r, remaining }) => {
     if (remaining > 0 || r.id === selectedReservationId) {
-      opts.push(`<option value="${r.id}">${esc(varietyLabel(r.variety))}・${esc(monthLabel(r.month))}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
+      opts.push(`<option value="${esc(r.id)}">${esc(varietyLabel(r.variety))}・${esc(monthLabel(r.month))}・${formatKg(r.kg)}（残り${formatKg(Math.max(remaining, 0))}）</option>`);
     }
   });
   sel.innerHTML = opts.join("");
@@ -350,7 +466,7 @@ function detachCustomerIfRenamed(selectId, nameId) {
 // 選んでいた顧客が消えていたら名前欄も空にする（名前欄と選択の食い違いを残さないため）
 function refreshCustomerSelects() {
   const placeholder = customers.length ? "顧客を選択してください" : "顧客管理から登録してください";
-  const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${c.customerId}">${esc(c.name)}</option>`).join("");
+  const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${esc(c.customerId)}">${esc(c.name)}</option>`).join("");
   [["customerSelect", "name"], ["shipmentCustomerSelect", "shipmentName"]].forEach(([id, nameId]) => {
     const e = document.getElementById(id);
     const nameInput = document.getElementById(nameId);
@@ -980,7 +1096,16 @@ function getVisibleCustomers() {
 
 function displayCustomers() {
   const arr = getVisibleCustomers();
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td class="action-td"><button class="detail-button" onclick="showCustomerDetail('${c.customerId}')">詳細</button></td><td class="action-td"><button class="edit-button" onclick="editCustomer('${c.customerId}')">編集</button></td><td class="action-td"><button class="delete-button" onclick="deleteCustomer('${c.customerId}')">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  // ボタンの処理は onclick 属性に顧客の id を書き込まず、ここで結びつける
+  // （読み込んだバックアップの id に細工があっても、スクリプトとして動かないようにするため）
+  const rows = document.getElementById("customerList").querySelectorAll("tr");
+  arr.forEach(({ c }, n) => {
+    const tr = rows[n];
+    tr.querySelector(".detail-button").onclick = () => showCustomerDetail(c.customerId);
+    tr.querySelector(".edit-button").onclick = () => editCustomer(c.customerId);
+    tr.querySelector(".delete-button").onclick = () => deleteCustomer(c.customerId);
+  });
 }
 
 function saveCustomer() {
@@ -1063,7 +1188,10 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','delivery')">納品書を印刷</button><button type="button" class="tool-button" onclick="printCustomerDoc('${c.customerId}','invoice')">請求書を印刷</button></div><button onclick="document.getElementById('customerDetail').hidden=true">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${s.unshipped <= 0 ? '<span class="badge badge-done">出荷完了</span>' : formatKg(s.unshipped)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div><button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
+  d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
+  d.querySelector(".detail-close-button").onclick = () => d.hidden = true;
   d.scrollIntoView({ behavior: "smooth" });
 }
 
@@ -1368,14 +1496,24 @@ function validateBackup(obj) {
   }
   // 品種が無い古いデータは、書き出すと品種の項目そのものが無くなる。それも読み込めるようにする
   const varietyOk = v => v === undefined || v === null || typeof v === "string";
-  if (!d.reservations.every(r => isPlainObject(r) && varietyOk(r.variety))) {
-    return { error: "予約のデータが正しくありません" };
+  // 画面への表示は esc() や textContent で守っているが、念のための二重の守りとして、
+  // id には英数字・「_」「-」だけを受け付ける（細工した文字が入ったファイルを読み込まないように）。
+  // 古いデータで id が無いものは、読み込んだあとに付け直す
+  const idOk = v => v === undefined || v === null || v === "" || (typeof v === "string" && SAFE_ID_PATTERN.test(v));
+  // 顧客の id は、使える文字の文字列のほか、古いデータに備えて「無し」と「0以上の整数」も受け付ける。
+  // どちらも読み込んだあとに fixCustomerIds で文字列の id に直す
+  const customerIdOk = v => idOk(v) || isLegacyNumericId(v);
+  const badReservation = d.reservations.findIndex(r => !(isPlainObject(r) && varietyOk(r.variety) && idOk(r.id) && customerIdOk(r.customerId)));
+  if (badReservation !== -1) {
+    return { error: `予約のデータが正しくありません（${badReservation + 1}件目）` };
   }
-  if (!d.shipments.every(s => isPlainObject(s) && varietyOk(s.variety))) {
-    return { error: "出荷のデータが正しくありません" };
+  const badShipment = d.shipments.findIndex(s => !(isPlainObject(s) && varietyOk(s.variety) && idOk(s.id) && customerIdOk(s.customerId) && idOk(s.reservationId)));
+  if (badShipment !== -1) {
+    return { error: `出荷のデータが正しくありません（${badShipment + 1}件目）` };
   }
-  if (!d.customers.every(c => isPlainObject(c) && typeof c.name === "string" && /^[A-Za-z0-9_-]+$/.test(String(c.customerId)))) {
-    return { error: "顧客のデータが正しくありません" };
+  const badCustomer = d.customers.findIndex(c => !(isPlainObject(c) && typeof c.name === "string" && customerIdOk(c.customerId)));
+  if (badCustomer !== -1) {
+    return { error: `顧客のデータが正しくありません（${badCustomer + 1}件目）` };
   }
   if (!isPlainObject(d.inventory)) {
     return { error: "在庫のデータが正しくありません" };
@@ -1386,18 +1524,29 @@ function validateBackup(obj) {
   return { data: { reservations: d.reservations, shipments: d.shipments, customers: d.customers, inventory: d.inventory, prices: d.prices || {} } };
 }
 
+// バックアップの内容に入れ替えて保存する。保存できたら true、できなければ元のデータのまま false を返す
 function applyBackup(d) {
+  const previous = { reservations, shipments, customers, inventory, prices };
   reservations = d.reservations;
   shipments = d.shipments;
   customers = d.customers;
   inventory = normalizeInventory(d.inventory);
   prices = loadPricesFrom(d.prices);
-  ensureAllIds();
-  save("reservations", reservations);
-  save(SHIPMENTS_STORAGE_KEY, shipments);
-  save(CUSTOMERS_STORAGE_KEY, customers);
-  save(INVENTORY_STORAGE_KEY, inventory);
-  save(PRICES_STORAGE_KEY, prices);
+  ensureAllIds(false);
+  const saved = saveAll([
+    ["reservations", reservations],
+    [SHIPMENTS_STORAGE_KEY, shipments],
+    [CUSTOMERS_STORAGE_KEY, customers],
+    [INVENTORY_STORAGE_KEY, inventory],
+    [PRICES_STORAGE_KEY, prices]
+  ]);
+  if (!saved) {
+    ({ reservations, shipments, customers, inventory, prices } = previous);
+    refreshAll();
+    return false;
+  }
+  // 読み込んだデータは id も含めてすべて保存できたので、保存待ちの id は無い
+  idsNotSaved = false;
   cancelEdit();
   cancelShipmentEdit();
   cancelCustomerEdit();
@@ -1405,6 +1554,7 @@ function applyBackup(d) {
   detail.hidden = true;
   detail.innerHTML = "";
   refreshAll();
+  return true;
 }
 
 function importBackup(event) {
@@ -1437,8 +1587,11 @@ function importBackup(event) {
     const d = result.data;
     const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
     confirmThen(message, () => {
-      applyBackup(d);
-      finish("バックアップを読み込みました", "success");
+      if (applyBackup(d)) {
+        finish("バックアップを読み込みました", "success");
+      } else {
+        finish("バックアップを保存できなかったため、読み込みを取りやめました（保存できる容量が足りない可能性があります）。今までのデータはそのままです");
+      }
     }, () => finish());
   };
   reader.readAsText(file);

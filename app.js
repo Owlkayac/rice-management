@@ -585,7 +585,8 @@ function addShipment() {
       });
     }
   }
-  clearShipmentForm();
+  // 同じ顧客の出荷を続けて登録しやすいように、顧客の選択は残す
+  clearShipmentForm(s.customerId);
   refreshAll();
 }
 
@@ -610,11 +611,13 @@ function cancelShipmentEdit() {
   cancelShipmentEditButton.hidden = true;
 }
 
-function clearShipmentForm() {
-  ["shipmentName", "shipmentKg", "shipmentMemo"].forEach(id => document.getElementById(id).value = "");
+// keepCustomerId を渡すと、その顧客を選んだままにする（省略すると顧客の選択も空にする）
+function clearShipmentForm(keepCustomerId = "") {
+  ["shipmentKg", "shipmentMemo"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("shipmentDate").value = todayString();
-  // 先に顧客の選択を空にしてから、予約の選択肢を作り直す（前の顧客の予約を残さない）
-  shipmentCustomerSelect.value = "";
+  // 先に顧客の選択を決めてから、予約の選択肢をその顧客の最新の予約で作り直す（前の顧客の予約を残さない）
+  shipmentCustomerSelect.value = keepCustomerId || "";
+  shipmentName.value = customers.find(c => c.customerId === shipmentCustomerSelect.value)?.name || "";
   refreshShipmentReservationOptions();
 }
 

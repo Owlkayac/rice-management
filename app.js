@@ -377,7 +377,7 @@ function addReservation() {
     notify("kgを入力してください", "warn");
     return;
   }
-  const linked = editingReservationId === null ? 0 : shipments.filter(s => s.reservationId === editingReservationId).length;
+  const linked = linkedShipmentCount(editingReservationId);
   const before = reservations.find(x => x.id === editingReservationId);
   if (linked && before && customerChangedSinceEditStart()) {
     notify(`この予約には出荷が${linked}件紐づいているため、顧客は変更できません。${customerRestoreHint()}顧客を変えるには、先に紐づいた出荷を編集して、対象の予約を「特定の予約に紐づけない」にしてください。`, "warn", 12000);
@@ -472,7 +472,7 @@ function updateCustomerLockNote() {
   const note = document.getElementById("customerLockNote");
   // 古い index.html が残っていて要素が無いときは何もしない（ここで止まると予約の保存まで止まるため）
   if (!note) return;
-  const count = editingReservationId === null ? 0 : shipments.filter(s => s.reservationId === editingReservationId).length;
+  const count = linkedShipmentCount(editingReservationId);
   note.hidden = !count;
   note.textContent = "";
   if (!count) return;
@@ -490,12 +490,36 @@ function clearReservation() {
   document.getElementById("customerSelect").value = "";
 }
 
+// 予約に紐づいている出荷の一覧と件数（予約の顧客変更・削除を止めるかどうかの判断に使う）
+function linkedShipments(reservationId) {
+  return reservationId ? shipments.filter(s => s.reservationId === reservationId) : [];
+}
+
+function linkedShipmentCount(reservationId) {
+  return linkedShipments(reservationId).length;
+}
+
+// 出荷が紐づいている予約は削除できないことを知らせる。削除できないときは true を返す
+function blockDeleteIfLinked(reservationId) {
+  const linked = linkedShipments(reservationId);
+  if (!linked.length) return false;
+  // どの出荷を直せばよいか分かるように、出荷日・品種・kg を並べる（多いときは先頭の5件まで）
+  const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${s.variety}・${formatKg(s.kg)}`).join("、");
+  const more = linked.length > 5 ? `ほか${linked.length - 5}件` : "";
+  notify(`この予約には出荷が${linked.length}件紐づいているため、削除できません（${list}${more}）。削除するには、先に「出荷管理」でこれらの出荷を編集して対象の予約を「特定の予約に紐づけない」にするか、その出荷を削除してください。`, "warn", 15000);
+  return true;
+}
+
 function deleteReservation(i) {
   if (!ensureFresh()) return;
   const targetId = reservations[i].id;
+  // 出荷が紐づいた予約を消すと、出荷に存在しない予約の id が残り、紐づけが知らないうちに外れてしまうため止める
+  if (blockDeleteIfLinked(targetId)) return;
   confirmThen("この予約を削除しますか？", () => {
     const index = reservations.findIndex(x => x.id === targetId);
     if (index === -1) return;
+    // 念のための再確認（今は、確認中に別のタブで変わった場合は confirmThen が先に止める）
+    if (blockDeleteIfLinked(targetId)) return;
     reservations.splice(index, 1);
     if (targetId === editingReservationId) cancelEdit();
     save("reservations", reservations);

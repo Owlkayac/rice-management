@@ -97,7 +97,13 @@ let lastSaveWarningAt = 0;
 let idsNotSaved = false;
 const ID_LINKED_KEYS = ["reservations", SHIPMENTS_STORAGE_KEY, CUSTOMERS_STORAGE_KEY];
 
+// ブラウザへの保存に失敗して、画面のデータが保存した内容より先に進んでいるかもしれないとき true。
+// その間はスプレッドシートに保存しない（送る中身と、保存した内容から作る目印がずれるため）。
+// 保存した内容を読み直したとき（別のタブの取り込み・ページを開き直したとき）に false に戻す
+let localSaveFailed = false;
+
 function warnSaveFailed() {
+  localSaveFailed = true;
   const now = Date.now();
   if (now - lastSaveWarningAt < 3000) return;
   lastSaveWarningAt = now;
@@ -139,6 +145,7 @@ function saveAll(entries) {
     });
     return true;
   } catch {
+    localSaveFailed = true;
     // 元に戻すのは、書き込めたキーだけ（書き込めなかったキーは元の中身のまま残っている）。
     // 先に書き込んだキーを消して容量を空けてから、元の中身を書き戻す
     written.forEach(({ k }) => {
@@ -1498,6 +1505,7 @@ function reloadFromStorage() {
   inventory = loadInventory();
   prices = loadPrices();
   STORAGE_KEYS.forEach(k => lastSeen[k] = rawGet(k));
+  localSaveFailed = false;
   reloadCount++;
   ensureAllIds();
   if (editingReservationId !== null) cancelEdit();
@@ -1551,8 +1559,14 @@ function onStorageChange(e) {
   if (e.storageArea !== localStorage) return;
   if ([SHEET_URL_KEY, SHEET_TOKEN_KEY, SHEET_SAVED_AT_KEY, SHEET_SYNCED_KEY].includes(e.key)) {
     // ほかのタブで保存先が変わったら、入力中でなければ設定の欄も合わせる（古い URL で保存し直さないように）
-    const settings = document.getElementById("sheetSettings");
-    if ((e.key === SHEET_URL_KEY || e.key === SHEET_TOKEN_KEY) && !settings.contains(document.activeElement)) fillSheetSettings();
+    // （設定の枠を開いているときは、書きかけを消さないよう欄はそのままにして知らせる）
+    if (e.key === SHEET_URL_KEY || e.key === SHEET_TOKEN_KEY) {
+      if (document.getElementById("sheetSettings").open) {
+        notify("別のタブで保存先の設定が変わりました。この画面の設定の欄は、書きかけを消さないようそのままにしています。", "warn", 10000);
+      } else {
+        fillSheetSettings();
+      }
+    }
     showSheetStatus();
     return;
   }
@@ -1916,6 +1930,12 @@ function currentFingerprint() {
   return fingerprintCache.value;
 }
 
+// 画面のデータを、ブラウザにすべて保存できているなら true
+// （保存に失敗すると画面のデータだけが先に進み、送る中身と目印（currentFingerprint）がずれるため）
+function dataMatchesStorage() {
+  return !localSaveFailed && !idsNotSaved;
+}
+
 function currentData() {
   return { reservations, shipments, customers, inventory, prices };
 }
@@ -1982,7 +2002,7 @@ function showSheetStatus() {
   const lastDate = last ? new Date(last) : null;
   if (!lastDate || Number.isNaN(lastDate.getTime())) {
     el.textContent = readSheetText(SHEET_SYNCED_KEY) === SHEET_EMPTY_MARK
-      ? "スプレッドシートはまだ空です。「全データを保存」で今のデータを保存できます。"
+      ? "前に読み込んだときは、スプレッドシートは空でした。「全データを保存」で今のデータを保存できます。"
       : "この端末では、まだスプレッドシートと合わせていません。はじめに「全データを読み込み」をしてください。";
     return;
   }
@@ -2071,6 +2091,13 @@ const SHEET_LOAD_ERRORS = {
   network: "スプレッドシートにつながりませんでした。インターネットの接続と、保存先の URL を確かめてください。"
 };
 
+// やりとりの間に、ほかのタブで保存先が変えられていないか
+function sheetUrlUnchanged(url) {
+  if (readSheetText(SHEET_URL_KEY) === url) return true;
+  notify("やりとりしている間に、保存先の設定が変わりました。新しい保存先で、もう一度「全データを読み込み」からやり直してください。", "warn", 10000);
+  return false;
+}
+
 function sheetCounts(d) {
   return `予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件`;
 }
@@ -2085,6 +2112,15 @@ function saveToSheet() {
     showSheetStatus();
     return;
   }
+  // まだ一度も合わせていない端末は、先に読み込んでもらう（スプレッドシートの内容を知らずに上書きしないため）
+  if (sheetSavedAt() === null && readSheetText(SHEET_SYNCED_KEY) !== SHEET_EMPTY_MARK) {
+    notify("この端末では、まだスプレッドシートと合わせていません。先に「全データを読み込み」を押してください（スプレッドシートが空なら、そのあと保存できます）。", "warn", 10000);
+    return;
+  }
+  if (!dataMatchesStorage()) {
+    notify("この端末のブラウザへの保存に失敗した変更があるため、スプレッドシートへの保存を止めました。先に「データを書き出す」でファイルに控えてから、ページを開き直してください。", "error", 15000);
+    return;
+  }
   const message = `スプレッドシートに全データを保存しますか？\n\n【保存する内容】${sheetCounts(currentData())}\n\nスプレッドシートの今の内容は上書きされます（前の内容は、スプレッドシートの「履歴」シートに残ります）。`;
   confirmThen(message, sendSaveToSheet);
 }
@@ -2093,7 +2129,7 @@ async function sendSaveToSheet() {
   // 確認の画面の間に、ボタンがもう一度押されていないか確かめる
   if (sheetBusy) return;
   const config = sheetConfig();
-  if (!config) return;
+  if (!config || !dataMatchesStorage()) return;
   const expectedSavedAt = sheetSavedAt();
   const backup = makeBackup();
   const body = JSON.stringify({ token: config.token, action: "save", backup, expectedSavedAt });
@@ -2118,6 +2154,7 @@ async function sendSaveToSheet() {
     setSheetBusy(false);
   }
   if (result.ok === true && typeof result.savedAt === "string") {
+    if (!sheetUrlUnchanged(config.url)) return;
     // やりとりの間に、覚えている日時や手元のデータが入れ替わっていたら、今回の日時は覚えない
     // （覚えると、次の保存でほかの端末・タブの内容を確認なしで上書きしてしまうため。覚えなければ次の保存は確認で止まる）
     if (sheetSavedAt() === expectedSavedAt && reloadCount === reloadBefore && dataReplacedCount === replacedBefore) {
@@ -2127,6 +2164,9 @@ async function sendSaveToSheet() {
       notify(`スプレッドシートに保存しました。ただし、保存している間にほかのタブや画面でデータが変わったため、次に保存する前に確かめが必要です。\n${SHEET_RECHECK_STEPS}`, "warn", 15000);
     }
     if (typeof result.warning === "string") notify(result.warning, "warn", 10000);
+  } else if (result.ok === true) {
+    // 保存はできたようだが、保存日時が返ってこなかった
+    notify(`スプレッドシートからの返事が正しくなかったため、保存できたかどうか分かりません。\n${SHEET_RECHECK_STEPS}`, "error", 15000);
   } else if (result.conflict === true) {
     notify((expectedSavedAt === null
       ? "保存を止めました：スプレッドシートにはすでにデータがあり、この端末ではまだ読み込んでいません（上書きしないため）。\n"
@@ -2159,6 +2199,7 @@ async function loadFromSheet() {
   }
   if (result.empty === true) {
     // スプレッドシートは空なので、この端末から保存してよい
+    if (!sheetUrlUnchanged(config.url)) return;
     rememberSheetSync(null, SHEET_EMPTY_MARK);
     notify("スプレッドシートにはまだデータが保存されていません。「全データを保存」で今のデータを保存できます。", "info", 10000);
     return;
@@ -2169,9 +2210,17 @@ async function loadFromSheet() {
     return;
   }
   const d = checked.data;
-  const message = `スプレッドシートのデータを読み込みますか？\n\n【読み込む内容】${sheetCounts(d)}\n【現在のデータ】${sheetCounts(currentData())}\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
+  // スプレッドシートに保存していない変更があれば、読み込むと消えることをはっきり伝える
+  const hasLocal = reservations.length + shipments.length + customers.length > 0;
+  const unsynced = hasLocal && !(sheetSavedAt() !== null && readSheetText(SHEET_SYNCED_KEY) === currentFingerprint());
+  const warning = unsynced ? "⚠ この端末には、スプレッドシートに保存していない内容があります。読み込むと、その内容は消えます。\n\n" : "";
+  const message = `${warning}スプレッドシートのデータを読み込みますか？\n\n【読み込む内容】${sheetCounts(d)}\n【現在のデータ】${sheetCounts(currentData())}\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
   confirmThen(message, () => {
     // 入れ替えに成功したときだけ、合わせた日時を覚える（キャンセル・失敗のときに覚え直すと、次の保存でほかの端末の内容を消してしまうため）
+    if (readSheetText(SHEET_URL_KEY) !== config.url) {
+      sheetUrlUnchanged(config.url);
+      return;
+    }
     if (applyBackup(d)) {
       rememberSheetSync(result.savedAt, currentFingerprint());
       notify("スプレッドシートのデータを読み込みました", "success");

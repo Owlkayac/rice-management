@@ -148,6 +148,15 @@ button:active {
   transform: translateY(1px);
 }
 
+/* 押せないボタンは灰色にし、マウスを乗せても押しても見た目を変えない */
+button:disabled,
+button:disabled:hover,
+button:disabled:active {
+  background: #b5b5b5;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .form-actions {
   display: flex;
   gap: 10px;

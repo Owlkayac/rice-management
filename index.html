@@ -415,12 +415,12 @@
             <label for="sheetUrl">保存先の URL（ウェブアプリの URL）</label>
             <input type="url" id="sheetUrl" placeholder="https://script.google.com/macros/s/……/exec" autocomplete="off" spellcheck="false">
             <label for="sheetToken">合言葉</label>
-            <input type="password" id="sheetToken" autocomplete="new-password" spellcheck="false">
+            <input type="password" id="sheetToken" autocomplete="off" spellcheck="false">
             <div class="backup-actions">
               <button type="button" id="sheetSettingsSave" onclick="saveSheetSettings()">設定を保存</button>
               <button type="button" id="sheetSettingsClear" class="cancel-button" onclick="clearSheetSettings()">設定を消す</button>
             </div>
-            <p class="backup-note">合言葉はこの端末のブラウザに保存されます。家族などと共用しているパソコンでは設定しないでください。ブラウザに「パスワードを保存しますか」と聞かれたら、保存しないでください。</p>
+            <p class="backup-note">合言葉はこの端末のブラウザに保存されます。家族などと共用しているパソコンでは設定しないでください。ブラウザに「パスワードを保存しますか」と聞かれたら保存せず、「安全なパスワードを自動生成」などの候補も選ばないでください（スプレッドシート側と違う合言葉になります）。</p>
           </details>
         </div>
       </section>

@@ -6,6 +6,22 @@ const LAST_BACKUP_STORAGE_KEY = "lastBackupAt";
 const BACKUP_APP_NAME = "rice-reservation-backup";
 const BACKUP_VERSION = 1;
 const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+// スプレッドシート（Google Apps Script のウェブアプリ）との保存・読み込み
+const SHEET_URL_KEY = "sheetUrl";
+const SHEET_TOKEN_KEY = "sheetToken";
+// 最後にスプレッドシートと合わせた（読み込んだ・保存した）ときの保存日時。次の保存で、ほかの端末の保存を消さないための確認に使う
+const SHEET_SAVED_AT_KEY = "sheetSavedAt";
+// 最後にスプレッドシートと合わせたときのデータの目印（そのあとで変えたかを知らせるため）
+const SHEET_SYNCED_KEY = "sheetSyncedData";
+// スプレッドシート側（Code.gs の MAX_BODY_BYTES）と同じ上限
+const SHEET_MAX_BYTES = 2 * 1024 * 1024;
+// 合言葉をほかの場所へ送らないよう、Google のウェブアプリの URL だけを受け付ける
+// （Google Workspace のアカウントで公開すると「/a/macros/会社のドメイン/s/…」の形になるので、それも受け付ける）
+const SHEET_URL_PATTERN = /^https:\/\/script\.google\.com\/(?:a\/macros\/[A-Za-z0-9.-]+|macros)\/s\/[A-Za-z0-9_-]+\/exec$/;
+// スプレッドシート側の合言葉の最低文字数（Code.gs の MIN_TOKEN_LENGTH と同じ）
+const SHEET_MIN_TOKEN_LENGTH = 16;
+// 返事を待つ最長の時間（Apps Script は1回6分で止まるので、それより少し長く待つ）
+const SHEET_TIMEOUT_MS = 7 * 60 * 1000;
 // 予約・出荷・顧客の id として受け付ける文字（英数字・「_」「-」）
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const RESERVATION_SORT_KEY = "reservationSort";
@@ -1466,6 +1482,7 @@ function refreshAll() {
   // 予約の追加・削除や顧客の変更を、出荷フォームの「対象の予約」にも反映する（選んでいた予約は残す）
   refreshShipmentReservationOptions(document.getElementById("shipmentReservation").value);
   showBackupStatus();
+  showSheetStatus();
 }
 
 // ---------- 複数タブ対策（他のタブでの更新を取り込む） ----------
@@ -1532,6 +1549,13 @@ function syncFromOtherTab() {
 
 function onStorageChange(e) {
   if (e.storageArea !== localStorage) return;
+  if ([SHEET_URL_KEY, SHEET_TOKEN_KEY, SHEET_SAVED_AT_KEY, SHEET_SYNCED_KEY].includes(e.key)) {
+    // ほかのタブで保存先が変わったら、入力中でなければ設定の欄も合わせる（古い URL で保存し直さないように）
+    const settings = document.getElementById("sheetSettings");
+    if ((e.key === SHEET_URL_KEY || e.key === SHEET_TOKEN_KEY) && !settings.contains(document.activeElement)) fillSheetSettings();
+    showSheetStatus();
+    return;
+  }
   if (e.key === STOCK_MODE_KEY) {
     stockMode = loadStockMode();
     displayInventory();
@@ -1699,13 +1723,18 @@ function showBackupStatus() {
   el.textContent = `現在のデータ：予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件　${lastText}`;
 }
 
-function exportBackup() {
-  const backup = {
+// 今のデータからバックアップを作る（ファイルへの書き出しと、スプレッドシートへの保存で同じ形を使う）
+function makeBackup() {
+  return {
     app: BACKUP_APP_NAME,
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
     data: { reservations, shipments, customers, inventory, prices }
   };
+}
+
+function exportBackup() {
+  const backup = makeBackup();
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -1793,6 +1822,7 @@ function applyBackup(d) {
   }
   // 読み込んだデータは id も含めてすべて保存できたので、保存待ちの id は無い
   idsNotSaved = false;
+  dataReplacedCount++;
   cancelEdit();
   cancelShipmentEdit();
   cancelCustomerEdit();
@@ -1843,6 +1873,314 @@ function importBackup(event) {
   reader.readAsText(file);
 }
 
+// ---------- スプレッドシートと合わせる ----------
+
+let sheetBusy = false;
+// この画面でデータを丸ごと入れ替えた回数（スプレッドシートとやりとりしている間に入れ替わったかを見分けるため）
+let dataReplacedCount = 0;
+
+function readSheetText(key) {
+  const v = read(key, "");
+  return typeof v === "string" ? v : "";
+}
+
+// 保存先の URL と合言葉。どちらかが無い・形が正しくなければ null
+function sheetConfig() {
+  const url = readSheetText(SHEET_URL_KEY);
+  const token = readSheetText(SHEET_TOKEN_KEY);
+  if (!SHEET_URL_PATTERN.test(url) || token.length < SHEET_MIN_TOKEN_LENGTH) return null;
+  return { url, token };
+}
+
+// 最後にスプレッドシートと合わせたときの保存日時。まだなら null。
+// 別のタブで合わせたときの値も使うよう、使うたびに読み直す
+function sheetSavedAt() {
+  const v = read(SHEET_SAVED_AT_KEY, null);
+  return typeof v === "string" ? v : null;
+}
+
+// 保存してあるデータから短い目印を作る（最後に合わせたあとで変えたかを見分けるため。同じ中身なら同じ目印になる）。
+// データは変えるたびにすぐ保存され、その文字が lastSeen に控えてあるので、それを使う。
+// 検索の入力のたびに呼ばれるので、控えの文字が前と同じなら、前に作った目印をそのまま使う
+let fingerprintCache = { sources: [], value: "" };
+function currentFingerprint() {
+  const sources = STORAGE_KEYS.map(k => lastSeen[k]);
+  if (sources.every((v, i) => v === fingerprintCache.sources[i])) return fingerprintCache.value;
+  const text = sources.map(v => v ?? "").join("\u0000");
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  fingerprintCache = { sources, value: `${text.length}-${(h >>> 0).toString(16)}` };
+  return fingerprintCache.value;
+}
+
+function currentData() {
+  return { reservations, shipments, customers, inventory, prices };
+}
+
+function removeKeys(keys) {
+  keys.forEach(k => {
+    try {
+      localStorage.removeItem(k);
+    } catch {
+      // 消せなかったものは、そのまま残る
+    }
+  });
+}
+
+// スプレッドシートの目印：合わせたときのデータの目印の代わりに、「スプレッドシートは空だった」ことを覚える
+const SHEET_EMPTY_MARK = "empty";
+
+// スプレッドシートと合わせた保存日時と、そのときのデータの目印（fingerprint）を覚える。
+// savedAt が null なら日時を忘れる（fingerprint に SHEET_EMPTY_MARK を渡すと「空だった」ことを覚える）
+function rememberSheetSync(savedAt, fingerprint) {
+  if (savedAt === null) {
+    removeKeys([SHEET_SAVED_AT_KEY]);
+    if (fingerprint === SHEET_EMPTY_MARK) save(SHEET_SYNCED_KEY, SHEET_EMPTY_MARK);
+    else removeKeys([SHEET_SYNCED_KEY]);
+  } else {
+    save(SHEET_SAVED_AT_KEY, savedAt);
+    save(SHEET_SYNCED_KEY, fingerprint);
+  }
+  showSheetStatus();
+}
+
+// ボタンと入力欄の有効・無効をそろえる（やりとりの間は、保存先の設定も変えられないようにする）
+function updateSheetControls(configured) {
+  document.getElementById("sheetSaveButton").disabled = sheetBusy || !configured;
+  document.getElementById("sheetLoadButton").disabled = sheetBusy || !configured;
+  ["sheetUrl", "sheetToken", "sheetSettingsSave", "sheetSettingsClear"].forEach(id => {
+    document.getElementById(id).disabled = sheetBusy;
+  });
+}
+
+// 保存先の設定の入力欄に、保存してある内容を入れる（最初の表示と、設定を保存・消去したときだけ）
+function fillSheetSettings() {
+  document.getElementById("sheetUrl").value = readSheetText(SHEET_URL_KEY);
+  const tokenInput = document.getElementById("sheetToken");
+  tokenInput.value = "";
+  tokenInput.placeholder = readSheetText(SHEET_TOKEN_KEY) ? "設定済み（変えるときだけ入れてください）" : `${SHEET_MIN_TOKEN_LENGTH}文字以上`;
+}
+
+// 状態の文とボタンを今の状態に合わせる
+function showSheetStatus() {
+  const el = document.getElementById("sheetStatus");
+  if (!el) return;
+  const configured = sheetConfig() !== null;
+  updateSheetControls(configured);
+  if (sheetBusy) {
+    el.textContent = "スプレッドシートとやりとりしています。終わるまでお待ちください…";
+    return;
+  }
+  if (!configured) {
+    el.textContent = "保存先がまだ設定されていません。下の「保存先の設定」を開いて、URL と合言葉を入れてください。";
+    return;
+  }
+  const last = sheetSavedAt();
+  const lastDate = last ? new Date(last) : null;
+  if (!lastDate || Number.isNaN(lastDate.getTime())) {
+    el.textContent = readSheetText(SHEET_SYNCED_KEY) === SHEET_EMPTY_MARK
+      ? "スプレッドシートはまだ空です。「全データを保存」で今のデータを保存できます。"
+      : "この端末では、まだスプレッドシートと合わせていません。はじめに「全データを読み込み」をしてください。";
+    return;
+  }
+  const changed = readSheetText(SHEET_SYNCED_KEY) !== currentFingerprint();
+  el.textContent = `最後にスプレッドシートと合わせた内容：${lastDate.toLocaleString("ja-JP")} に保存されたもの` +
+    (changed ? "\n★ そのあとで変えた内容があります。スプレッドシートにも残すときは「全データを保存」を押してください。" : "（そのあと変えた内容はありません）");
+}
+
+function setSheetBusy(busy) {
+  sheetBusy = busy;
+  showSheetStatus();
+}
+
+function saveSheetSettings() {
+  if (sheetBusy) return;
+  const url = document.getElementById("sheetUrl").value.trim();
+  const token = document.getElementById("sheetToken").value.trim() || readSheetText(SHEET_TOKEN_KEY);
+  if (!SHEET_URL_PATTERN.test(url)) {
+    notify("保存先の URL が正しくありません。「https://script.google.com/」で始まり「/exec」で終わる、ウェブアプリの URL をそのまま貼り付けてください", "error", 10000);
+    return;
+  }
+  if (token.length < SHEET_MIN_TOKEN_LENGTH) {
+    notify(`合言葉は${SHEET_MIN_TOKEN_LENGTH}文字以上にしてください（スプレッドシート側に設定したものと同じにします）`, "error", 10000);
+    return;
+  }
+  const urlChanged = url !== readSheetText(SHEET_URL_KEY);
+  if (!save(SHEET_URL_KEY, url) || !save(SHEET_TOKEN_KEY, token)) return;
+  // 保存先が変わったら、前の保存先と合わせた日時は使えないので忘れる
+  if (urlChanged) rememberSheetSync(null);
+  fillSheetSettings();
+  document.getElementById("sheetSettings").open = false;
+  showSheetStatus();
+  notify("保存先の設定を保存しました", "success");
+}
+
+function clearSheetSettings() {
+  if (sheetBusy) return;
+  // 予約などのデータには関係ない操作なので、ほかのタブの更新を確かめる confirmThen は使わない
+  if (!confirm("保存先の設定（URL と合言葉）をこの端末から消しますか？\n\nスプレッドシートのデータは消えません。")) return;
+  removeKeys([SHEET_URL_KEY, SHEET_TOKEN_KEY, SHEET_SAVED_AT_KEY, SHEET_SYNCED_KEY]);
+  fillSheetSettings();
+  showSheetStatus();
+  notify("保存先の設定を消しました", "success");
+}
+
+// callSheet がうまくいかなかったときの例外。kind に理由を入れる
+//   timeout：決めた時間のうちに返事が来なかった / network：つながらなかった・途中で切れた / invalid：返事が正しい形でなかった
+function sheetError(kind) {
+  const err = new Error(kind);
+  err.kind = kind;
+  return err;
+}
+
+// スプレッドシートに送り、返事を返す。うまくいかなかったときは sheetError を投げる
+async function callSheet(url, body) {
+  const controller = new AbortController();
+  // 時間の上限は、返事の本文を読み終えるまでにかける
+  const timer = setTimeout(() => controller.abort(), SHEET_TIMEOUT_MS);
+  try {
+    let text;
+    try {
+      // Content-Type は付けない（付けると、ブラウザの制限で Google に送れなくなる）
+      const res = await fetch(url, { method: "POST", body, signal: controller.signal });
+      text = await res.text();
+    } catch (err) {
+      throw sheetError(err && err.name === "AbortError" ? "timeout" : "network");
+    }
+    let result;
+    try {
+      result = JSON.parse(text);
+    } catch {
+      // Apps Script が時間切れで止まったときや、公開の設定が違うときは、JSON ではない画面が返る
+      throw sheetError("invalid");
+    }
+    if (!isPlainObject(result)) throw sheetError("invalid");
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 読み込みがうまくいかなかったときの文（callSheet の kind ごと）
+const SHEET_LOAD_ERRORS = {
+  timeout: "スプレッドシートから返事が届きませんでした。時間をおいて、もう一度「全データを読み込み」を押してください。",
+  invalid: "スプレッドシートから正しい返事がありませんでした。時間をおいてもう一度試してください。続くときは、スプレッドシート側の公開の設定（アクセスできるユーザーが「全員」か）を確かめてください。",
+  network: "スプレッドシートにつながりませんでした。インターネットの接続と、保存先の URL を確かめてください。"
+};
+
+function sheetCounts(d) {
+  return `予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件`;
+}
+
+// 保存が止まったとき・保存できたか分からないときに案内する手順（どの場合も同じ手順にそろえる）
+const SHEET_RECHECK_STEPS = "先に「データを書き出す」で今のデータをファイルに控えてから、「全データを読み込み」でスプレッドシートの内容を確かめてください。";
+
+function saveToSheet() {
+  if (sheetBusy) return;
+  if (!ensureFresh()) return;
+  if (!sheetConfig()) {
+    showSheetStatus();
+    return;
+  }
+  const message = `スプレッドシートに全データを保存しますか？\n\n【保存する内容】${sheetCounts(currentData())}\n\nスプレッドシートの今の内容は上書きされます（前の内容は、スプレッドシートの「履歴」シートに残ります）。`;
+  confirmThen(message, sendSaveToSheet);
+}
+
+async function sendSaveToSheet() {
+  // 確認の画面の間に、ボタンがもう一度押されていないか確かめる
+  if (sheetBusy) return;
+  const config = sheetConfig();
+  if (!config) return;
+  const expectedSavedAt = sheetSavedAt();
+  const backup = makeBackup();
+  const body = JSON.stringify({ token: config.token, action: "save", backup, expectedSavedAt });
+  if (new Blob([body]).size > SHEET_MAX_BYTES) {
+    notify("データが大きすぎるため、スプレッドシートに保存できません（2MB まで）。古い予約・出荷を整理するか、「データを書き出す」でファイルに保存してください", "error", 10000);
+    return;
+  }
+  // 送る中身の目印は、送る前に作っておく（返事を待つ間に予約を足すと、中身が変わってしまうため）
+  const sentFingerprint = currentFingerprint();
+  // やりとりの間に、ほかのタブで取り込み・合わせ直しが起きたか、この画面でデータを入れ替えたかを見分けるための控え
+  const reloadBefore = reloadCount;
+  const replacedBefore = dataReplacedCount;
+  setSheetBusy(true);
+  let result;
+  try {
+    result = await callSheet(config.url, body);
+  } catch {
+    // 送ったあとで返事が届かなかっただけで、スプレッドシートには保存できていることがある
+    notify(`スプレッドシートから返事が届かなかったため、保存できたかどうか分かりません。\n${SHEET_RECHECK_STEPS}`, "error", 15000);
+    return;
+  } finally {
+    setSheetBusy(false);
+  }
+  if (result.ok === true && typeof result.savedAt === "string") {
+    // やりとりの間に、覚えている日時や手元のデータが入れ替わっていたら、今回の日時は覚えない
+    // （覚えると、次の保存でほかの端末・タブの内容を確認なしで上書きしてしまうため。覚えなければ次の保存は確認で止まる）
+    if (sheetSavedAt() === expectedSavedAt && reloadCount === reloadBefore && dataReplacedCount === replacedBefore) {
+      rememberSheetSync(result.savedAt, sentFingerprint);
+      notify("スプレッドシートに保存しました", "success");
+    } else {
+      notify(`スプレッドシートに保存しました。ただし、保存している間にほかのタブや画面でデータが変わったため、次に保存する前に確かめが必要です。\n${SHEET_RECHECK_STEPS}`, "warn", 15000);
+    }
+    if (typeof result.warning === "string") notify(result.warning, "warn", 10000);
+  } else if (result.conflict === true) {
+    notify((expectedSavedAt === null
+      ? "保存を止めました：スプレッドシートにはすでにデータがあり、この端末ではまだ読み込んでいません（上書きしないため）。\n"
+      : "保存を止めました：前に合わせたあとで、スプレッドシートの内容が変わっています（ほかの端末からの保存や、さきほど返事が届かなかった保存など）。\n") + SHEET_RECHECK_STEPS, "error", 15000);
+  } else {
+    notify(typeof result.error === "string" ? result.error : "スプレッドシートに保存できませんでした", "error", 10000);
+  }
+}
+
+async function loadFromSheet() {
+  if (sheetBusy) return;
+  const config = sheetConfig();
+  if (!config) {
+    showSheetStatus();
+    return;
+  }
+  setSheetBusy(true);
+  let result;
+  try {
+    result = await callSheet(config.url, JSON.stringify({ token: config.token, action: "load" }));
+  } catch (err) {
+    notify(SHEET_LOAD_ERRORS[err && err.kind] || SHEET_LOAD_ERRORS.network, "error", 15000);
+    return;
+  } finally {
+    setSheetBusy(false);
+  }
+  if (result.ok !== true) {
+    notify(typeof result.error === "string" ? result.error : "スプレッドシートから読み込めませんでした", "error", 10000);
+    return;
+  }
+  if (result.empty === true) {
+    // スプレッドシートは空なので、この端末から保存してよい
+    rememberSheetSync(null, SHEET_EMPTY_MARK);
+    notify("スプレッドシートにはまだデータが保存されていません。「全データを保存」で今のデータを保存できます。", "info", 10000);
+    return;
+  }
+  const checked = validateBackup(result.backup);
+  if (checked.error || typeof result.savedAt !== "string") {
+    notify(`スプレッドシートのデータが正しくありません：${checked.error || "保存日時がありません"}`, "error", 10000);
+    return;
+  }
+  const d = checked.data;
+  const message = `スプレッドシートのデータを読み込みますか？\n\n【読み込む内容】${sheetCounts(d)}\n【現在のデータ】${sheetCounts(currentData())}\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
+  confirmThen(message, () => {
+    // 入れ替えに成功したときだけ、合わせた日時を覚える（キャンセル・失敗のときに覚え直すと、次の保存でほかの端末の内容を消してしまうため）
+    if (applyBackup(d)) {
+      rememberSheetSync(result.savedAt, currentFingerprint());
+      notify("スプレッドシートのデータを読み込みました", "success");
+    } else {
+      notify("読み込んだデータを保存できなかったため、読み込みを取りやめました（保存できる容量が足りない可能性があります）。今までのデータはそのままです", "error", 10000);
+    }
+  });
+}
+
 fillOptions();
 document.getElementById("reservationSort").value = loadChoice(RESERVATION_SORT_KEY, RESERVATION_SORTS, "recent");
 document.getElementById("shipmentSort").value = loadChoice(SHIPMENT_SORT_KEY, SHIPMENT_SORTS, "recent");
@@ -1872,4 +2210,6 @@ document.getElementById("shipmentName").oninput = () => {
 };
 document.getElementById("shipmentReservation").onchange = syncShipmentVarietyWithReservation;
 document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView(e.dataset.view));
+fillSheetSettings();
+if (sheetConfig() === null) document.getElementById("sheetSettings").open = true;
 refreshAll();

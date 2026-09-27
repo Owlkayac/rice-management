@@ -719,6 +719,45 @@ small {
   min-width: 160px;
 }
 
+.sheet-sync {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #b7d5b9;
+}
+
+.sheet-status {
+  white-space: pre-line;
+}
+
+.sheet-sync h3 {
+  margin: 0 0 8px;
+}
+
+.sheet-settings {
+  margin-top: 12px;
+}
+
+.sheet-settings summary {
+  cursor: pointer;
+  font-weight: bold;
+  color: var(--green-900);
+  padding: 8px 0;
+}
+
+.sheet-settings label,
+.sheet-settings input {
+  display: block;
+  width: 100%;
+}
+
+.sheet-settings label {
+  margin: 10px 0 4px;
+}
+
+.sheet-settings .backup-actions {
+  margin-top: 12px;
+}
+
 .backup-note {
   margin: 12px 0 0;
   font-size: 14px;

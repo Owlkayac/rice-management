@@ -1,0 +1,2 @@
+# Supabase の接続先（Project URL と Publishable key）。見本は supabase-config.example.js
+supabase-config.js

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Supabase 接続テスト｜米予約管理</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+      background: #f4f7f4;
+      color: #222;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #fff;
+      border-radius: 12px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      color: #24502c;
+    }
+    .note {
+      margin: 0 0 16px;
+      color: #666;
+      font-size: 14px;
+    }
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    button {
+      min-height: 46px;
+      padding: 0 18px;
+      border: 0;
+      border-radius: 8px;
+      background: #2f6b3b;
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #9bb59f;
+      cursor: wait;
+    }
+    .result {
+      padding: 12px 16px;
+      border-radius: 8px;
+      border-left: 5px solid #999;
+      background: #f5f5f5;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+    .result.success {
+      border-color: #2f6b3b;
+      background: #e3efe3;
+    }
+    .result.error {
+      border-color: #a00;
+      background: #ffdede;
+      color: #700;
+    }
+    .table-wrapper {
+      margin-top: 12px;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th,
+    td {
+      border: 1px solid #dde5dd;
+      padding: 6px 8px;
+      text-align: left;
+      white-space: nowrap;
+    }
+    th {
+      background: #e3efe3;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Supabase 接続テスト</h1>
+    <p class="note">Supabase の reservations テーブルに、テスト予約の追加と一覧の取得ができるかを確かめるページです。いつもの予約管理の画面（index.html）とは別で、アプリのデータには影響しません。</p>
+    <div class="buttons">
+      <button type="button" id="addTestButton">テスト予約を追加</button>
+      <button type="button" id="fetchButton">一覧を取得</button>
+    </div>
+    <div id="result" class="result" role="status">ボタンを押すと、ここに結果が出ます。</div>
+    <div id="tableArea" class="table-wrapper"></div>
+  </main>
+
+  <!-- 読み込む順番：supabase-js（CDN）→ 接続先の設定 → 接続用の関数 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
+  <script src="supabase-client.js"></script>
+  <script>
+    const resultBox = document.getElementById("result");
+    const tableArea = document.getElementById("tableArea");
+    const buttons = [document.getElementById("addTestButton"), document.getElementById("fetchButton")];
+
+    // 結果を表示する（type は "success" / "error" / ""）。文字は textContent で入れる
+    function showResult(type, text) {
+      resultBox.className = `result ${type}`;
+      resultBox.textContent = text;
+    }
+
+    // よくあるエラーに、原因と直し方の目安を添える
+    function explainError(error) {
+      const text = `${error.message} ${error.code} ${error.details}`;
+      if (error.code === "SETUP") return "";
+      if (error.code === "42501" || /permission denied|row-level security/i.test(text)) {
+        return "RLS（行ごとのアクセス制限）で止められています。Supabase の Authentication → Policies で、reservations テーブルに読み書きを許すポリシー（temp all）があるか確かめてください。";
+      }
+      if (/Invalid API key|No API key|JWT|apikey/i.test(text)) {
+        return "Publishable key が違う可能性があります。supabase-config.js の SUPABASE_PUBLISHABLE_KEY を、Supabase の画面からコピーし直してください。（Supabase からの英語のヒントに別の種類のキーの名前が出ることがありますが、ここで使ってよいのは sb_publishable_ で始まる Publishable key だけです）";
+      }
+      if (/Failed to fetch|NetworkError|Load failed/i.test(text)) {
+        return "Supabase に接続できませんでした。supabase-config.js の SUPABASE_URL（Project URL）が正しいか、インターネットにつながっているかを確かめてください。";
+      }
+      // 列が無いときも「does not exist」と返るので、テーブルより先に列を確かめる
+      if (error.code === "PGRST204" || error.code === "42703" || /Could not find the .* column|column .* does not exist/i.test(text)) {
+        return "テーブルに必要な列がありません。name・variety・amount_kg・status・created_at の列があるか確かめてください。";
+      }
+      if (error.code === "PGRST205" || error.code === "42P01" || /Could not find the table|relation .* does not exist/i.test(text)) {
+        return "reservations テーブルが見つかりません。テーブル名が reservations（小文字）になっているか確かめてください。";
+      }
+      if (error.code === "22P02") {
+        return "列の型と入れようとした値が合っていません。amount_kg が数値の列になっているか確かめてください。";
+      }
+      if (error.code === "23502") {
+        return "入れなければいけない列に値が入っていません。テーブルの列の設定（Is Nullable・既定値）を確かめてください。";
+      }
+      return "";
+    }
+
+    function errorText(title, error) {
+      const lines = [`失敗：${title}`, "", `内容：${error.message}`];
+      if (error.code && error.code !== "SETUP") lines.push(`コード：${error.code}`);
+      if (error.details) lines.push(`詳しく：${error.details}`);
+      if (error.hint) lines.push(`ヒント（Supabase より）：${error.hint}`);
+      const advice = explainError(error);
+      if (advice) lines.push("", `考えられる原因と直し方：${advice}`);
+      return lines.join("\n");
+    }
+
+    // 取得した予約を表にする（値は textContent で入れる）
+    function showTable(rows) {
+      tableArea.innerHTML = "";
+      if (!rows.length) return;
+      const columns = ["id", "name", "variety", "amount_kg", "status", "created_at"];
+      const table = document.createElement("table");
+      const head = table.createTHead().insertRow();
+      columns.forEach(c => {
+        const th = document.createElement("th");
+        th.textContent = c;
+        head.appendChild(th);
+      });
+      const body = table.createTBody();
+      rows.forEach(row => {
+        const tr = body.insertRow();
+        columns.forEach(c => {
+          tr.insertCell().textContent = row[c] === null || row[c] === undefined ? "" : String(row[c]);
+        });
+      });
+      tableArea.appendChild(table);
+    }
+
+    // 処理の間はボタンを押せないようにする（二重に追加しないため）
+    async function runWithButtonsLocked(task) {
+      buttons.forEach(b => b.disabled = true);
+      try {
+        await task();
+      } finally {
+        buttons.forEach(b => b.disabled = false);
+      }
+    }
+
+    document.getElementById("addTestButton").onclick = () => runWithButtonsLocked(async () => {
+      showResult("", "テスト予約を追加しています…");
+      tableArea.innerHTML = "";
+      const { data, error } = await addSupabaseReservation({ name: "テスト予約", variety: "A", amountKg: 5, status: "received" });
+      if (error) {
+        showResult("error", errorText("テスト予約を追加できませんでした", error));
+        return;
+      }
+      showResult("success", "成功：テスト予約を追加しました。\n\n追加した予約：");
+      showTable(data || []);
+    });
+
+    document.getElementById("fetchButton").onclick = () => runWithButtonsLocked(async () => {
+      showResult("", "一覧を取得しています…");
+      tableArea.innerHTML = "";
+      const { data, error } = await fetchSupabaseReservations();
+      if (error) {
+        showResult("error", errorText("一覧を取得できませんでした", error));
+        return;
+      }
+      const rows = data || [];
+      // RLS で読み取り（SELECT）が許されていないときも、エラーにならず0件で返ってくるため、その可能性も知らせる
+      showResult("success", rows.length
+        ? `成功：${rows.length}件の予約を取得しました（新しい順）。`
+        : "成功：接続できましたが、予約は0件でした。\n\nSupabase の Table Editor では行が見えるのにここでは0件のときは、RLS で読み取り（SELECT）が許されていない可能性があります。Supabase の Authentication → Policies で、reservations テーブルのポリシーを確かめてください。");
+      showTable(rows);
+    });
+
+    // 開いたときに設定の問題が分かっていれば、先に知らせる
+    if (supabaseSetupProblem) {
+      showResult("error", `準備ができていません：${supabaseSetupProblem}`);
+    }
+  </script>
+</body>
+</html>

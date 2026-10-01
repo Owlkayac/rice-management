@@ -61,6 +61,15 @@ let cloudSaveError = null;
 // 最後に Supabase から読み込んだ時刻と、読み直している途中かどうか
 let cloudLoadedAt = 0;
 let cloudRefreshing = false;
+// 最後の読み直しに失敗したときのエラー（読み直せたら null に戻す）。この間は、データを変える操作を止める
+let cloudRefreshError = null;
+// 読み直しの様子を画面の上に出すか（30秒ごとの読み直しのたびに表示が変わって、ちらつかないように。
+// 操作の前の読み直しと、エラーからのやり直しのときだけ出す）
+let cloudRefreshShown = false;
+// 読み直しを待つ最長の時間（返事が来ないまま、いつまでも操作できなくならないように）
+const CLOUD_REFRESH_TIMEOUT_MS = 20 * 1000;
+// 操作の前（またはエラーの赤い枠のボタン）で読み直しを頼まれたら true（終わったときに「もう一度操作してください」を出すため）
+let cloudRefreshAsked = false;
 // この画面で予約・出荷・顧客・在庫・単価を保存した回数（読み直している間に保存があったかを見分けるため）
 let cloudChangeCount = 0;
 // 画面を開いている間に、Supabase から読み直す間隔
@@ -1521,9 +1530,13 @@ function ensureFresh() {
     return false;
   }
   // ほかのパソコンやタブの変更を消さないよう、古いままのデータでは操作させない
-  if (cloudRefreshing || (!hasUnsentCloudChanges() && Date.now() - cloudLoadedAt > CLOUD_STALE_MS)) {
+  // （最新のデータを読み込めていないとき＝インターネットにつながっていないときなども、操作を止める）
+  if (needsCloudRefresh()) {
+    const failed = cloudRefreshError && !cloudRefreshing;
     refreshFromCloud(true);
-    notify("最新のデータを Supabase から読み込んでいます。少し待ってから、もう一度操作してください。", "warn");
+    notify(failed
+      ? "Supabase から最新のデータを読み込めていないため、操作を止めています。画面のいちばん上の赤い枠を見てください。"
+      : "最新のデータを Supabase から読み込んでいます。少し待ってから、もう一度操作してください。", "warn");
     return false;
   }
   if (!isStale()) return true;
@@ -1743,9 +1756,19 @@ async function runCloudSave() {
   }
 }
 
-function retryCloudSave() {
-  if (!cloudReady || cloudSaving) return;
-  scheduleCloudSave();
+// 操作の前に、Supabase から読み直す必要があれば true
+// （送っていない変更があるときは読み直さない。読み直すと、その変更が消えるため）
+function needsCloudRefresh() {
+  if (hasUnsentCloudChanges()) return false;
+  if (cloudRefreshError) return true;
+  return Date.now() - cloudLoadedAt > CLOUD_STALE_MS;
+}
+
+// 赤い枠のボタン：保存できていない変更があれば送り直し、最新のデータを読み込めていなければ読み直す
+function retryCloud() {
+  if (!cloudReady || cloudSaving || cloudRefreshing) return;
+  if (cloudSaveError) scheduleCloudSave();
+  else if (cloudRefreshError) refreshFromCloud(true);
 }
 
 // よくあるエラーに、原因と直し方の目安を添える
@@ -1753,6 +1776,7 @@ function explainCloudError(error) {
   const text = `${error.message} ${error.code} ${error.details || ""}`;
   if (error.code === "SETUP") return "";
   if (error.code === "DUPLICATE") return "「データを書き出す」でファイルに控えてから、ページを開き直してください。";
+  if (error.code === "TIMEOUT") return "インターネットにつながっているか確かめてください。";
   if (/Failed to fetch|NetworkError|Load failed/i.test(text)) {
     return "インターネットにつながっているか確かめてください。";
   }
@@ -1778,21 +1802,30 @@ function showCloudStatus() {
   const status = document.getElementById("cloudStatus");
   const box = document.getElementById("cloudError");
   if (!status || !box) return;
-  box.hidden = !cloudSaveError;
+  const button = document.getElementById("cloudRetryButton");
+  box.hidden = !cloudSaveError && !cloudRefreshError;
   if (cloudSaveError) {
     document.getElementById("cloudErrorText").textContent = `Supabase に保存できていない変更があります。\n${cloudErrorText(cloudSaveError)}\nこのままページを閉じたり開き直したりすると、その変更は消えます。\n（保存できるまでは、ほかのパソコンやタブの変更も取り込みません）`;
-    document.getElementById("cloudRetryButton").disabled = cloudSaving;
+    button.textContent = "もう一度保存する";
+  } else if (cloudRefreshError) {
+    document.getElementById("cloudErrorText").textContent = `Supabase から最新のデータを読み込めていないため、データを変える操作を止めています（古いデータで、ほかのパソコンの変更を上書きしないため）。\n${cloudErrorText(cloudRefreshError)}\n直ったら「もう一度読み込む」を押してください。`;
+    button.textContent = "もう一度読み込む";
   }
+  button.disabled = cloudSaving || cloudRefreshing;
   if (!cloudReady) {
     status.textContent = "";
   } else if (cloudSaving) {
     status.textContent = "Supabase に保存しています…";
   } else if (cloudSaveError) {
     status.textContent = "保存できていない変更があります";
+  } else if (cloudRefreshing && cloudRefreshShown) {
+    status.textContent = "Supabase から読み込んでいます…";
+  } else if (cloudRefreshError) {
+    status.textContent = "最新のデータを読み込めていません";
   } else {
     status.textContent = "Supabase に保存済み";
   }
-  status.classList.toggle("cloud-status-error", !!cloudSaveError && !cloudSaving);
+  status.classList.toggle("cloud-status-error", !cloudSaving && !(cloudRefreshing && cloudRefreshShown) && !!(cloudSaveError || cloudRefreshError));
 }
 
 // 読み込みの間（と、読み込めなかったとき）は、画面全体をおおって操作できないようにする
@@ -1892,24 +1925,53 @@ function userIsEditing() {
 // 30秒ごとの読み直し（force が false）は、編集や入力の途中なら後回しにする。
 // 操作の前の読み直し（force が true）は、古いデータで保存しないよう、編集中でも読み直す
 async function refreshFromCloud(force = false) {
-  if (!cloudReady || cloudRefreshing || hasUnsentCloudChanges()) return;
+  if (!cloudReady || hasUnsentCloudChanges()) return;
+  if (cloudRefreshing) {
+    // 30秒ごとの読み直しの途中に、操作の前の読み直しを頼まれたら、終わったときに「もう一度操作してください」を出す
+    if (force) {
+      cloudRefreshShown = true;
+      cloudRefreshAsked = true;
+      showCloudStatus();
+    }
+    return;
+  }
   if (!force && userIsEditing()) return;
   cloudRefreshing = true;
+  cloudRefreshShown = force || !!cloudRefreshError;
+  cloudRefreshAsked = force;
+  showCloudStatus();
   const changesBefore = cloudChangeCount;
   let d;
+  let timer;
   try {
-    d = await fetchCloudData();
+    // 返事が来ないまま待ち続けないよう、時間の上限を決めて待つ
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => resolve({ error: { message: `Supabase から${CLOUD_REFRESH_TIMEOUT_MS / 1000}秒たっても返事がありませんでした。`, code: "TIMEOUT" } }), CLOUD_REFRESH_TIMEOUT_MS);
+    });
+    d = await Promise.race([fetchCloudData(), timeout]);
+  } catch (err) {
+    d = { error: { message: String((err && err.message) || err), code: "" } };
   } finally {
+    clearTimeout(timer);
     cloudRefreshing = false;
   }
   if (d.error) {
-    // 操作の前の読み直しに失敗したときは、操作できない理由を知らせる
-    if (force) notify(`Supabase から最新のデータを読み込めませんでした。\n${cloudErrorText(d.error)}`, "error", 10000);
+    // 読み直せないときは、画面の上の赤い枠で理由を知らせる（読み直せるまで、データを変える操作は止める）
+    cloudRefreshError = d.error;
+    showCloudStatus();
     return;
   }
+  const recovered = !!cloudRefreshError;
+  cloudRefreshError = null;
+  showCloudStatus();
   // 読み直している間に、この画面で保存があったら、読んだ内容は古いので使わない
   if (cloudChangeCount !== changesBefore || hasUnsentCloudChanges()) return;
-  if (!applyCloudData(d)) return;
+  if (!applyCloudData(d)) {
+    // 操作の前の読み直しで、変わったところが無かったときは、もう一度押してもらう
+    if (cloudRefreshAsked) notify("最新のデータを読み込みました。もう一度操作してください。", "success");
+    else if (recovered) notify("Supabase から最新のデータを読み込めるようになりました。", "success");
+    return;
+  }
   const wasEditing = editingReservationId !== null || editingShipmentId !== null || editingCustomerId !== null;
   reloadFromStorage();
   notify(`ほかのパソコンやタブでデータが更新されていたため、最新の内容に更新しました。${wasEditing ? "編集中の内容は取り消しました。もう一度編集してください。" : ""}`, wasEditing ? "warn" : "info", 10000);

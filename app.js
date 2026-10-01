@@ -803,7 +803,11 @@ function displayReservations() {
     });
     sel.value = statusOf(r);
     sel.onchange = e => {
-      if (!ensureFresh()) return;
+      // 止めたときは、選択欄を保存してある状態に戻す（変えたあとの値のまま残ると、保存できたように見えるため）
+      if (!ensureFresh()) {
+        refreshAll();
+        return;
+      }
       reservations[i].status = e.target.value;
       save("reservations", reservations);
       refreshAll();
@@ -914,14 +918,21 @@ function displayInventory() {
     const tr = document.createElement("tr");
     tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
     tr.innerHTML = `<th>${v}</th><td data-label="在庫量"><input type="number" min="0" value="${inventory[v]}" aria-label="${v}の在庫量(kg)"></td><td data-label="予約量">${formatKg(reserved[v])}</td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input" aria-label="${v}の単価(円/kg)"></td><td data-label="残り在庫">${formatKg(remain)}</td><td>${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
+    // 止めたときは、欄を保存してある値に戻す（入れた値のまま残ると、保存できたように見えるため）
     tr.querySelector("input").onchange = e => {
-      if (!ensureFresh()) return;
+      if (!ensureFresh()) {
+        refreshAll();
+        return;
+      }
       inventory[v] = Math.max(0, Number(e.target.value) || 0);
       save(INVENTORY_STORAGE_KEY, inventory);
       refreshAll();
     };
     tr.querySelector(".price-input").onchange = e => {
-      if (!ensureFresh()) return;
+      if (!ensureFresh()) {
+        refreshAll();
+        return;
+      }
       prices[v] = Math.max(0, Number(e.target.value) || 0);
       save(PRICES_STORAGE_KEY, prices);
       refreshAll();
@@ -1529,6 +1540,12 @@ function ensureFresh() {
     notify("Supabase からの読み込みが終わっていないため、まだ操作できません。", "warn");
     return false;
   }
+  // 保存できていない変更があるあいだは、新しい変更を受け付けない
+  // （つながらないまま変更を重ねると、閉じたときに消える量が増え、あとで送るときにほかの端末の変更を上書きしやすくなるため）
+  if (cloudSaveError) {
+    notify("Supabase に保存できていない変更があるため、操作を止めています。画面のいちばん上の赤い枠の「もう一度保存する」を押してください。", "warn", 8000);
+    return false;
+  }
   // ほかのパソコンやタブの変更を消さないよう、古いままのデータでは操作させない
   // （最新のデータを読み込めていないとき＝インターネットにつながっていないときなども、操作を止める）
   if (needsCloudRefresh()) {
@@ -1781,7 +1798,7 @@ function explainCloudError(error) {
     return "インターネットにつながっているか確かめてください。";
   }
   if (error.code === "42501" || /permission denied|row-level security/i.test(text)) {
-    return "Supabase の行ごとのアクセス制限（RLS）で止められています。SUPABASE_SWITCH.md の手順で、テーブルを作る SQL を実行したか確かめてください。";
+    return "Supabase の行ごとのアクセス制限（RLS）で止められています。Supabase の Authentication → Policies で、4つのテーブルに「temp all」のルールがあるか確かめて相談してください（テーブルを作る SQL をもう一度実行すると、データがすべて消えます）。";
   }
   if (/Invalid API key|No API key|JWT|apikey/i.test(text)) {
     return "supabase-config.js の Publishable key が正しいか確かめてください。";

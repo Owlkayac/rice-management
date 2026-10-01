@@ -46,6 +46,36 @@ const STOCK_MODES = {
 const varieties = ["A", "B", "C", "D", "E", "F"];
 const months = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
 const STORAGE_KEYS = ["reservations", SHIPMENTS_STORAGE_KEY, CUSTOMERS_STORAGE_KEY, INVENTORY_STORAGE_KEY, PRICES_STORAGE_KEY];
+// 予約・出荷・顧客・在庫・単価（STORAGE_KEYS）は、ブラウザ（localStorage）ではなく Supabase に保存する。
+// 画面を開いている間は、保存した内容をここに JSON の文字で持っておき、変わった行だけを Supabase へ送る。
+// （並べ替えの選び方など、それ以外の設定は今までどおり localStorage に保存する）
+const cloudStore = {};
+// Supabase から読み込み終わったら true（読み込みが終わるまでは、データを変える操作をさせない）
+let cloudReady = false;
+// Supabase へ送っている途中なら true
+let cloudSaving = false;
+// まだ送っていない変更があれば true
+let cloudSaveQueued = false;
+// 最後に送れなかったときのエラー（送れたら null に戻す）
+let cloudSaveError = null;
+// 最後に Supabase から読み込んだ時刻と、読み直している途中かどうか
+let cloudLoadedAt = 0;
+let cloudRefreshing = false;
+// 最後の読み直しに失敗したときのエラー（読み直せたら null に戻す）。この間は、データを変える操作を止める
+let cloudRefreshError = null;
+// 読み直しの様子を画面の上に出すか（30秒ごとの読み直しのたびに表示が変わって、ちらつかないように。
+// 操作の前の読み直しと、エラーからのやり直しのときだけ出す）
+let cloudRefreshShown = false;
+// 読み直しを待つ最長の時間（返事が来ないまま、いつまでも操作できなくならないように）
+const CLOUD_REFRESH_TIMEOUT_MS = 20 * 1000;
+// 操作の前（またはエラーの赤い枠のボタン）で読み直しを頼まれたら true（終わったときに「もう一度操作してください」を出すため）
+let cloudRefreshAsked = false;
+// この画面で予約・出荷・顧客・在庫・単価を保存した回数（読み直している間に保存があったかを見分けるため）
+let cloudChangeCount = 0;
+// 画面を開いている間に、Supabase から読み直す間隔
+const CLOUD_REFRESH_MS = 30 * 1000;
+// 最後に読み込んでからこれより長くたっていたら、操作の前に読み直す（スリープから戻ったときなど）
+const CLOUD_STALE_MS = 90 * 1000;
 const lastSeen = {};
 STORAGE_KEYS.forEach(k => lastSeen[k] = rawGet(k));
 let reservations = read("reservations", []);
@@ -65,18 +95,31 @@ let reloadCount = 0;
 
 function read(k, f) {
   try {
-    return JSON.parse(localStorage.getItem(k)) ?? f;
+    return JSON.parse(rawGet(k)) ?? f;
   } catch {
     return f;
   }
 }
 
 function rawGet(k) {
+  if (STORAGE_KEYS.includes(k)) return cloudStore[k] ?? null;
   try {
     return localStorage.getItem(k);
   } catch {
     return null;
   }
+}
+
+// 保存する。予約・出荷・顧客・在庫・単価は cloudStore に入れて Supabase へ送る（送るのは少しあと）。
+// それ以外は localStorage に保存する（容量不足などで失敗すると、例外が出る）
+function storeItem(k, text) {
+  if (STORAGE_KEYS.includes(k)) {
+    cloudStore[k] = text;
+    cloudChangeCount++;
+    scheduleCloudSave();
+    return;
+  }
+  localStorage.setItem(k, text);
 }
 
 function notify(message, type = "info", duration = 5000) {
@@ -121,7 +164,7 @@ function save(k, v) {
   }
   const text = JSON.stringify(v);
   try {
-    localStorage.setItem(k, text);
+    storeItem(k, text);
     lastSeen[k] = text;
     return true;
   } catch {
@@ -130,51 +173,15 @@ function save(k, v) {
   }
 }
 
-// 複数のデータをまとめて保存する。どれか1つでも保存に失敗したら、先に保存したものも元の中身に戻して false を返す
-// （容量不足などで途中まで保存され、「予約は新しいのに顧客は古い」ような食い違いが残らないようにするため）。
-// 失敗の通知は呼び出す側で出す
+// 予約・出荷・顧客・在庫・単価のうち、複数をまとめて保存する（画面の中の控えに入れてから、まとめて Supabase へ送る）。
+// 控えに入れるだけなので失敗しない。Supabase へ送れなかったときは、画面の上に赤いお知らせを出す（showCloudStatus）
 function saveAll(entries) {
-  const written = [];
-  try {
-    entries.forEach(([k, v]) => {
-      const before = rawGet(k);
-      const text = JSON.stringify(v);
-      localStorage.setItem(k, text);
-      lastSeen[k] = text;
-      written.push({ k, before, text });
-    });
-    return true;
-  } catch {
-    localSaveFailed = true;
-    // 元に戻すのは、書き込めたキーだけ（書き込めなかったキーは元の中身のまま残っている）。
-    // 先に書き込んだキーを消して容量を空けてから、元の中身を書き戻す
-    written.forEach(({ k }) => {
-      try {
-        localStorage.removeItem(k);
-      } catch {
-        // 消せなくても、書き戻しは続ける
-      }
-    });
-    let restored = true;
-    written.forEach(({ k, before, text }) => {
-      try {
-        if (before !== null) localStorage.setItem(k, before);
-      } catch {
-        restored = false;
-        // 元に戻せないときも、そのキーを空のままにしない（さっき書き込めた新しい中身を書き直す）
-        try {
-          localStorage.setItem(k, text);
-        } catch {
-          // ここまで失敗したら、どうにもできない
-        }
-      }
-      lastSeen[k] = rawGet(k);
-    });
-    if (!restored) {
-      notify("保存に失敗し、元のデータにも戻せませんでした。データが食い違っている可能性があります。すぐに「データを書き出す」でバックアップを取り、内容を確かめてください。", "error", 20000);
-    }
-    return false;
-  }
+  entries.forEach(([k, v]) => {
+    const text = JSON.stringify(v);
+    storeItem(k, text);
+    lastSeen[k] = text;
+  });
+  return true;
 }
 
 // 予約・出荷・顧客をまとめて保存する。保存できたら、付けた id の保存待ちを解く
@@ -796,7 +803,11 @@ function displayReservations() {
     });
     sel.value = statusOf(r);
     sel.onchange = e => {
-      if (!ensureFresh()) return;
+      // 止めたときは、選択欄を保存してある状態に戻す（変えたあとの値のまま残ると、保存できたように見えるため）
+      if (!ensureFresh()) {
+        refreshAll();
+        return;
+      }
       reservations[i].status = e.target.value;
       save("reservations", reservations);
       refreshAll();
@@ -907,14 +918,21 @@ function displayInventory() {
     const tr = document.createElement("tr");
     tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
     tr.innerHTML = `<th>${v}</th><td data-label="在庫量"><input type="number" min="0" value="${inventory[v]}" aria-label="${v}の在庫量(kg)"></td><td data-label="予約量">${formatKg(reserved[v])}</td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input" aria-label="${v}の単価(円/kg)"></td><td data-label="残り在庫">${formatKg(remain)}</td><td>${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
+    // 止めたときは、欄を保存してある値に戻す（入れた値のまま残ると、保存できたように見えるため）
     tr.querySelector("input").onchange = e => {
-      if (!ensureFresh()) return;
+      if (!ensureFresh()) {
+        refreshAll();
+        return;
+      }
       inventory[v] = Math.max(0, Number(e.target.value) || 0);
       save(INVENTORY_STORAGE_KEY, inventory);
       refreshAll();
     };
     tr.querySelector(".price-input").onchange = e => {
-      if (!ensureFresh()) return;
+      if (!ensureFresh()) {
+        refreshAll();
+        return;
+      }
       prices[v] = Math.max(0, Number(e.target.value) || 0);
       save(PRICES_STORAGE_KEY, prices);
       refreshAll();
@@ -1518,6 +1536,26 @@ function reloadFromStorage() {
 }
 
 function ensureFresh() {
+  if (!cloudReady) {
+    notify("Supabase からの読み込みが終わっていないため、まだ操作できません。", "warn");
+    return false;
+  }
+  // 保存できていない変更があるあいだは、新しい変更を受け付けない
+  // （つながらないまま変更を重ねると、閉じたときに消える量が増え、あとで送るときにほかの端末の変更を上書きしやすくなるため）
+  if (cloudSaveError) {
+    notify("Supabase に保存できていない変更があるため、操作を止めています。画面のいちばん上の赤い枠の「もう一度保存する」を押してください。", "warn", 8000);
+    return false;
+  }
+  // ほかのパソコンやタブの変更を消さないよう、古いままのデータでは操作させない
+  // （最新のデータを読み込めていないとき＝インターネットにつながっていないときなども、操作を止める）
+  if (needsCloudRefresh()) {
+    const failed = cloudRefreshError && !cloudRefreshing;
+    refreshFromCloud(true);
+    notify(failed
+      ? "Supabase から最新のデータを読み込めていないため、操作を止めています。画面のいちばん上の赤い枠を見てください。"
+      : "最新のデータを Supabase から読み込んでいます。少し待ってから、もう一度操作してください。", "warn");
+    return false;
+  }
   if (!isStale()) return true;
   reloadFromStorage();
   notify("別のタブや画面でデータが更新されていたため、最新の内容に更新しました。もう一度操作してください。", "warn");
@@ -1549,12 +1587,15 @@ function confirmThen(message, action, onStop) {
   }, 0);
 }
 
+// ※ 予約・出荷・顧客・在庫・単価は Supabase に保存するようになったため、isStale はいつも false になり、今は何もしない。
+// ほかの端末やタブの変更は、refreshFromCloud で取り込む
 function syncFromOtherTab() {
   if (!isStale()) return;
   reloadFromStorage();
   notify("別のタブでデータが更新されたため、最新の内容に更新しました。", "info", 8000);
 }
 
+// 同じブラウザの別のタブで、localStorage に保存しているもの（スプレッドシートの設定・在庫の判定の切りかえ）が変わったら合わせる
 function onStorageChange(e) {
   if (e.storageArea !== localStorage) return;
   if ([SHEET_URL_KEY, SHEET_TOKEN_KEY, SHEET_SAVED_AT_KEY, SHEET_SYNCED_KEY].includes(e.key)) {
@@ -1584,6 +1625,392 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pageshow", e => {
   if (e.persisted) syncFromOtherTab();
+});
+
+// ---------- Supabase との読み書き ----------
+
+// 文字の項目：無いとき（undefined・null）は null にして送る
+function cloudText(v) {
+  return v === undefined || v === null ? null : String(v);
+}
+
+// 数の項目：数にできないときは null にして送る
+function cloudNumber(v) {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Supabase の値をアプリの値にする（null は「項目が無い」にそろえる。アプリの古いデータと同じ形にするため）
+function fromCloud(v) {
+  return v === null ? undefined : v;
+}
+
+function fromCloudNumber(v) {
+  return v === null || v === undefined ? undefined : Number(v);
+}
+
+// 番号（id）として使える値なら、そのまま返す。使えない値なら undefined（画面に細工した文字を出さないため）
+function cloudSafeId(v) {
+  return typeof v === "string" && SAFE_ID_PATTERN.test(v) ? v : undefined;
+}
+
+// アプリのデータと、Supabase のテーブルの行との対応。
+// key：cloudStore の中の名前、keyColumn：行を見分ける列、order：読み込むときの並び順、
+// toRows：アプリのデータ → 行の一覧、fromRow：行 → アプリのデータ（使えない行なら null）
+const CLOUD_TABLES = [
+  {
+    key: CUSTOMERS_STORAGE_KEY, table: "customers", label: "顧客", keyColumn: "id", order: ["created_at", "id"],
+    toRows: list => list.map(c => ({
+      id: cloudText(c.customerId), name: cloudText(c.name), furigana: cloudText(c.furigana), phone: cloudText(c.phone), address: cloudText(c.address), memo: cloudText(c.memo)
+    })),
+    fromRow: row => cloudSafeId(row.id) ? {
+      customerId: row.id, name: fromCloud(row.name) ?? "", furigana: fromCloud(row.furigana), phone: fromCloud(row.phone), address: fromCloud(row.address), memo: fromCloud(row.memo)
+    } : null
+  },
+  {
+    key: "reservations", table: "reservations", label: "予約", keyColumn: "id", order: ["created_at", "id"],
+    toRows: list => list.map(r => ({
+      id: cloudText(r.id), name: cloudText(r.name), customer_id: cloudText(r.customerId), variety: cloudText(r.variety), month: cloudText(r.month), amount_kg: cloudNumber(r.kg), channel: cloudText(r.channel), status: cloudText(r.status)
+    })),
+    fromRow: row => cloudSafeId(row.id) ? {
+      id: row.id, variety: fromCloud(row.variety), month: fromCloud(row.month), name: fromCloud(row.name), customerId: cloudSafeId(row.customer_id), kg: fromCloudNumber(row.amount_kg), channel: fromCloud(row.channel), status: fromCloud(row.status)
+    } : null
+  },
+  {
+    key: SHIPMENTS_STORAGE_KEY, table: "shipments", label: "出荷", keyColumn: "id", order: ["created_at", "id"],
+    toRows: list => list.map(x => ({
+      id: cloudText(x.id), reservation_id: cloudText(x.reservationId), customer_id: cloudText(x.customerId), name: cloudText(x.name), variety: cloudText(x.variety), ship_date: cloudText(x.date), amount_kg: cloudNumber(x.kg), memo: cloudText(x.memo)
+    })),
+    fromRow: row => cloudSafeId(row.id) ? {
+      id: row.id, variety: fromCloud(row.variety), date: fromCloud(row.ship_date), name: fromCloud(row.name), customerId: cloudSafeId(row.customer_id), kg: fromCloudNumber(row.amount_kg), memo: fromCloud(row.memo), reservationId: cloudSafeId(row.reservation_id)
+    } : null
+  }
+];
+
+// 在庫と単価は、品種ごとに1行（variety_settings テーブル）にまとめて保存する
+const CLOUD_VARIETY_TABLE = "variety_settings";
+
+function varietySettingRows() {
+  const stock = normalizeInventory(read(INVENTORY_STORAGE_KEY, {}));
+  const price = loadPricesFrom(read(PRICES_STORAGE_KEY, {}));
+  return varieties.map(v => ({ variety: v, stock_kg: stock[v], price: price[v] }));
+}
+
+// 最後に Supabase と合わせたときの行（テーブルごとに「行を見分ける値 → 行の JSON の文字」）。
+// 今のデータとくらべて、変わった行・増えた行は保存し、無くなった行は消す
+const cloudBaseline = {};
+
+// 今のデータから、テーブルごとの行の一覧を作る
+function currentCloudRows() {
+  return [
+    ...CLOUD_TABLES.map(t => ({ table: t.table, label: t.label, keyColumn: t.keyColumn, rows: t.toRows(read(t.key, [])) })),
+    { table: CLOUD_VARIETY_TABLE, label: "在庫・単価", keyColumn: "variety", rows: varietySettingRows() }
+  ];
+}
+
+// 前に合わせたときから変わった分だけ、Supabase へ送る。送れなかったらエラーを返す（送れたら null）。
+// 途中で失敗しても、送れた分は控え（cloudBaseline）に入れるので、次はその続きから送り直す
+async function sendCloudChanges() {
+  for (const { table, label, keyColumn, rows } of currentCloudRows()) {
+    const base = cloudBaseline[table];
+    const current = new Map();
+    for (const row of rows) {
+      const key = row[keyColumn];
+      if (key === null || current.has(key)) {
+        return { message: `${label}のデータに、番号（id）が無いものか、同じ番号のものが2件以上あります。`, code: "DUPLICATE" };
+      }
+      current.set(key, JSON.stringify(row));
+    }
+    const changed = [...current].filter(([key, json]) => base.get(key) !== json);
+    if (changed.length) {
+      const { error } = await upsertSupabaseRows(table, changed.map(([, json]) => JSON.parse(json)), keyColumn);
+      if (error) return error;
+      changed.forEach(([key, json]) => base.set(key, json));
+    }
+    const removed = [...base.keys()].filter(key => !current.has(key));
+    if (removed.length) {
+      const { error } = await deleteSupabaseRows(table, keyColumn, removed);
+      if (error) return error;
+      removed.forEach(key => base.delete(key));
+    }
+  }
+  return null;
+}
+
+// 保存があったら、少しあとで（同じ操作の中の保存をまとめてから）Supabase へ送る。
+// 送っている途中に保存があったら、送り終わってからもう一度送る
+function scheduleCloudSave() {
+  if (!cloudReady) return;
+  cloudSaveQueued = true;
+  if (cloudSaving) return;
+  cloudSaving = true;
+  showCloudStatus();
+  Promise.resolve().then(runCloudSave);
+}
+
+async function runCloudSave() {
+  try {
+    while (cloudSaveQueued) {
+      cloudSaveQueued = false;
+      const error = await sendCloudChanges();
+      if (error) {
+        // 送れなかった変更は、次の保存か「もう一度保存する」で送り直す
+        cloudSaveQueued = true;
+        cloudSaveError = error;
+        // 画面の下のほうを操作していても気づけるよう、お知らせも出す
+        notify("Supabase に保存できませんでした。画面のいちばん上の赤い枠を見てください。", "error", 10000);
+        break;
+      }
+      cloudSaveError = null;
+    }
+  } catch (err) {
+    cloudSaveQueued = true;
+    cloudSaveError = { message: String((err && err.message) || err), code: "" };
+  } finally {
+    cloudSaving = false;
+    showCloudStatus();
+  }
+}
+
+// 操作の前に、Supabase から読み直す必要があれば true
+// （送っていない変更があるときは読み直さない。読み直すと、その変更が消えるため）
+function needsCloudRefresh() {
+  if (hasUnsentCloudChanges()) return false;
+  if (cloudRefreshError) return true;
+  return Date.now() - cloudLoadedAt > CLOUD_STALE_MS;
+}
+
+// 赤い枠のボタン：保存できていない変更があれば送り直し、最新のデータを読み込めていなければ読み直す
+function retryCloud() {
+  if (!cloudReady || cloudSaving || cloudRefreshing) return;
+  if (cloudSaveError) scheduleCloudSave();
+  else if (cloudRefreshError) refreshFromCloud(true);
+}
+
+// よくあるエラーに、原因と直し方の目安を添える
+function explainCloudError(error) {
+  const text = `${error.message} ${error.code} ${error.details || ""}`;
+  if (error.code === "SETUP") return "";
+  if (error.code === "DUPLICATE") return "「データを書き出す」でファイルに控えてから、ページを開き直してください。";
+  if (error.code === "TIMEOUT") return "インターネットにつながっているか確かめてください。";
+  if (/Failed to fetch|NetworkError|Load failed/i.test(text)) {
+    return "インターネットにつながっているか確かめてください。";
+  }
+  if (error.code === "42501" || /permission denied|row-level security/i.test(text)) {
+    return "Supabase の行ごとのアクセス制限（RLS）で止められています。Supabase の Authentication → Policies で、4つのテーブルに「temp all」のルールがあるか確かめて相談してください（テーブルを作る SQL をもう一度実行すると、データがすべて消えます）。";
+  }
+  if (/Invalid API key|No API key|JWT|apikey/i.test(text)) {
+    return "supabase-config.js の Publishable key が正しいか確かめてください。";
+  }
+  if (error.code === "PGRST204" || error.code === "PGRST205" || error.code === "42703" || error.code === "42P01" || /does not exist|Could not find/i.test(text)) {
+    return "Supabase に必要なテーブルや列がありません。SUPABASE_SWITCH.md の手順で、supabase-schema.sql を実行してください。";
+  }
+  return "";
+}
+
+function cloudErrorText(error) {
+  const advice = explainCloudError(error);
+  return `${error.message}${error.code && error.code !== "SETUP" && error.code !== "DUPLICATE" ? `（コード：${error.code}）` : ""}${advice ? `\n${advice}` : ""}`;
+}
+
+// 画面の上の「保存の状態」と、送れなかったときの赤いお知らせを、今の状態に合わせる
+function showCloudStatus() {
+  const status = document.getElementById("cloudStatus");
+  const box = document.getElementById("cloudError");
+  if (!status || !box) return;
+  const button = document.getElementById("cloudRetryButton");
+  box.hidden = !cloudSaveError && !cloudRefreshError;
+  if (cloudSaveError) {
+    document.getElementById("cloudErrorText").textContent = `Supabase に保存できていない変更があります。\n${cloudErrorText(cloudSaveError)}\nこのままページを閉じたり開き直したりすると、その変更は消えます。\n（保存できるまでは、ほかのパソコンやタブの変更も取り込みません）`;
+    button.textContent = "もう一度保存する";
+  } else if (cloudRefreshError) {
+    document.getElementById("cloudErrorText").textContent = `Supabase から最新のデータを読み込めていないため、データを変える操作を止めています（古いデータで、ほかのパソコンの変更を上書きしないため）。\n${cloudErrorText(cloudRefreshError)}\n直ったら「もう一度読み込む」を押してください。`;
+    button.textContent = "もう一度読み込む";
+  }
+  button.disabled = cloudSaving || cloudRefreshing;
+  if (!cloudReady) {
+    status.textContent = "";
+  } else if (cloudSaving) {
+    status.textContent = "Supabase に保存しています…";
+  } else if (cloudSaveError) {
+    status.textContent = "保存できていない変更があります";
+  } else if (cloudRefreshing && cloudRefreshShown) {
+    status.textContent = "Supabase から読み込んでいます…";
+  } else if (cloudRefreshError) {
+    status.textContent = "最新のデータを読み込めていません";
+  } else {
+    status.textContent = "Supabase に保存済み";
+  }
+  status.classList.toggle("cloud-status-error", !cloudSaving && !(cloudRefreshing && cloudRefreshShown) && !!(cloudSaveError || cloudRefreshError));
+}
+
+// 読み込みの間（と、読み込めなかったとき）は、画面全体をおおって操作できないようにする
+function showCloudLoading(text, canRetry) {
+  document.getElementById("cloudLoadingText").textContent = text;
+  document.getElementById("cloudReloadButton").hidden = !canRetry;
+  document.getElementById("cloudLoading").hidden = false;
+  document.querySelector(".container").inert = true;
+}
+
+function hideCloudLoading() {
+  document.getElementById("cloudLoading").hidden = true;
+  document.querySelector(".container").inert = false;
+}
+
+// Supabase からすべてのデータを読み、アプリの形にする。読めなかったら { error } を返す
+async function fetchCloudData() {
+  const tables = [...CLOUD_TABLES, { table: CLOUD_VARIETY_TABLE, order: ["variety"] }];
+  const results = await Promise.all(tables.map(t => fetchAllSupabaseRows(t.table, t.order)));
+  const failed = results.find(r => r.error);
+  if (failed) return { error: failed.error };
+  let skipped = 0;
+  const lists = CLOUD_TABLES.map((t, i) => {
+    const list = [];
+    results[i].data.forEach(row => {
+      const item = t.fromRow(row);
+      if (item) list.push(item);
+      else skipped++;
+    });
+    return list;
+  });
+  const settings = results[CLOUD_TABLES.length].data.filter(row => varieties.includes(row.variety));
+  const stock = {};
+  const price = {};
+  settings.forEach(row => {
+    stock[row.variety] = row.stock_kg;
+    price[row.variety] = row.price;
+  });
+  return { lists, stock: normalizeInventory(stock), price: loadPricesFrom(price), savedVarieties: new Set(settings.map(row => row.variety)), skipped };
+}
+
+// 読んだデータを cloudStore と控え（cloudBaseline）に入れる。今の画面のデータと違っていたら true を返す
+function applyCloudData(d) {
+  const texts = {};
+  CLOUD_TABLES.forEach((t, i) => texts[t.key] = JSON.stringify(d.lists[i]));
+  texts[INVENTORY_STORAGE_KEY] = JSON.stringify(d.stock);
+  texts[PRICES_STORAGE_KEY] = JSON.stringify(d.price);
+  const changed = STORAGE_KEYS.some(k => cloudStore[k] !== texts[k]);
+  Object.assign(cloudStore, texts);
+  CLOUD_TABLES.forEach((t, i) => {
+    // 控えは、読み込んだデータをもう一度「行」にしたもので作る（読み込んだだけで送り直しにならないように）
+    cloudBaseline[t.table] = new Map(t.toRows(d.lists[i]).map(row => [row[t.keyColumn], JSON.stringify(row)]));
+  });
+  // 在庫・単価の控えは、Supabase に行があった品種だけ（無い品種は、次に保存するときに行を作る）
+  cloudBaseline[CLOUD_VARIETY_TABLE] = new Map(varietySettingRows().filter(row => d.savedVarieties.has(row.variety)).map(row => [row.variety, JSON.stringify(row)]));
+  cloudLoadedAt = Date.now();
+  return changed;
+}
+
+function notifySkippedRows(skipped) {
+  if (skipped) {
+    notify(`Supabase のデータのうち${skipped}件は、番号（id）が正しくないため読み込みませんでした。`, "warn", 15000);
+  }
+}
+
+// ページを開いたときに、Supabase からすべてのデータを読み込む
+async function loadFromCloud() {
+  showCloudLoading("Supabase からデータを読み込んでいます…", false);
+  const d = await fetchCloudData();
+  if (d.error) {
+    showCloudLoading(`Supabase からデータを読み込めませんでした。\n${cloudErrorText(d.error)}\n直したら「もう一度読み込む」を押してください。`, true);
+    return;
+  }
+  applyCloudData(d);
+  cloudReady = true;
+  reloadFromStorage();
+  hideCloudLoading();
+  showCloudStatus();
+  notifySkippedRows(d.skipped);
+}
+
+// まだ送っていない変更があれば true（このときは読み直さない。読み直すと、その変更が消えるため）
+function hasUnsentCloudChanges() {
+  return cloudSaving || cloudSaveQueued || !!cloudSaveError;
+}
+
+// 編集中のフォームがあるか、入力欄で入力している途中なら true
+function userIsEditing() {
+  if (editingReservationId !== null || editingShipmentId !== null || editingCustomerId !== null) return true;
+  const el = document.activeElement;
+  return !!el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && !!el.closest(".container");
+}
+
+// ほかのパソコンやタブで変わった内容を取り込むため、Supabase から読み直す
+// （古い画面のまま保存すると、ほかで変えた内容を古い値で上書きしてしまうため）。
+// 内容が変わっていたときだけ画面を作り直す（入力中の内容を、むやみに消さないため）。
+// 30秒ごとの読み直し（force が false）は、編集や入力の途中なら後回しにする。
+// 操作の前の読み直し（force が true）は、古いデータで保存しないよう、編集中でも読み直す
+async function refreshFromCloud(force = false) {
+  if (!cloudReady || hasUnsentCloudChanges()) return;
+  if (cloudRefreshing) {
+    // 30秒ごとの読み直しの途中に、操作の前の読み直しを頼まれたら、終わったときに「もう一度操作してください」を出す
+    if (force) {
+      cloudRefreshShown = true;
+      cloudRefreshAsked = true;
+      showCloudStatus();
+    }
+    return;
+  }
+  if (!force && userIsEditing()) return;
+  cloudRefreshing = true;
+  cloudRefreshShown = force || !!cloudRefreshError;
+  cloudRefreshAsked = force;
+  showCloudStatus();
+  const changesBefore = cloudChangeCount;
+  let d;
+  let timer;
+  try {
+    // 返事が来ないまま待ち続けないよう、時間の上限を決めて待つ
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => resolve({ error: { message: `Supabase から${CLOUD_REFRESH_TIMEOUT_MS / 1000}秒たっても返事がありませんでした。`, code: "TIMEOUT" } }), CLOUD_REFRESH_TIMEOUT_MS);
+    });
+    d = await Promise.race([fetchCloudData(), timeout]);
+  } catch (err) {
+    d = { error: { message: String((err && err.message) || err), code: "" } };
+  } finally {
+    clearTimeout(timer);
+    cloudRefreshing = false;
+  }
+  if (d.error) {
+    // 読み直せないときは、画面の上の赤い枠で理由を知らせる（読み直せるまで、データを変える操作は止める）
+    cloudRefreshError = d.error;
+    showCloudStatus();
+    return;
+  }
+  const recovered = !!cloudRefreshError;
+  cloudRefreshError = null;
+  showCloudStatus();
+  // 読み直している間に、この画面で保存があったら、読んだ内容は古いので使わない
+  if (cloudChangeCount !== changesBefore || hasUnsentCloudChanges()) return;
+  if (!applyCloudData(d)) {
+    // 操作の前の読み直しで、変わったところが無かったときは、もう一度押してもらう
+    if (cloudRefreshAsked) notify("最新のデータを読み込みました。もう一度操作してください。", "success");
+    else if (recovered) notify("Supabase から最新のデータを読み込めるようになりました。", "success");
+    return;
+  }
+  const wasEditing = editingReservationId !== null || editingShipmentId !== null || editingCustomerId !== null;
+  reloadFromStorage();
+  notify(`ほかのパソコンやタブでデータが更新されていたため、最新の内容に更新しました。${wasEditing ? "編集中の内容は取り消しました。もう一度編集してください。" : ""}`, wasEditing ? "warn" : "info", 10000);
+  notifySkippedRows(d.skipped);
+}
+
+// 画面を開いている間は、ときどき読み直す（見えていないタブでは読み直さず、戻ってきたときに読み直す）
+setInterval(() => {
+  if (!document.hidden) refreshFromCloud();
+}, CLOUD_REFRESH_MS);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshFromCloud();
+});
+window.addEventListener("pageshow", e => {
+  if (e.persisted) refreshFromCloud();
+});
+
+// Supabase に送れていない変更があるうちにページを閉じようとしたら、ブラウザの確認を出す
+window.addEventListener("beforeunload", e => {
+  if (!cloudSaving && !cloudSaveQueued && !cloudSaveError) return;
+  e.preventDefault();
+  e.returnValue = "";
 });
 
 // ---------- 納品書・請求書 ----------
@@ -1804,6 +2231,15 @@ function validateBackup(obj) {
   if (badCustomer !== -1) {
     return { error: `顧客のデータが正しくありません（${badCustomer + 1}件目）` };
   }
+  // 同じ id が2件以上あると、Supabase には1件しか保存できない（もう1件が消える）ため、読み込まない
+  const duplicates = [
+    ["予約", d.reservations, r => r.id],
+    ["出荷", d.shipments, x => x.id],
+    ["顧客", d.customers, c => c.customerId]
+  ].find(([, list, idOf]) => hasDuplicateId(list, idOf));
+  if (duplicates) {
+    return { error: `${duplicates[0]}のデータに、同じ番号（id）のものが2件以上あります` };
+  }
   if (!isPlainObject(d.inventory)) {
     return { error: "在庫のデータが正しくありません" };
   }
@@ -1811,6 +2247,20 @@ function validateBackup(obj) {
     return { error: "単価のデータが正しくありません" };
   }
   return { data: { reservations: d.reservations, shipments: d.shipments, customers: d.customers, inventory: d.inventory, prices: d.prices || {} } };
+}
+
+// 同じ id のものが2件以上あれば true（id が無いものは、読み込んだあとに別々の id を付けるので数えない。
+// 顧客の古い数値の id は文字に直すので、数値の 1 と文字の "1" は同じとみなす）
+function hasDuplicateId(list, idOf) {
+  const seen = new Set();
+  return list.some(x => {
+    const id = idOf(x);
+    if (id === undefined || id === null || id === "" || id === false) return false;
+    const key = String(id);
+    if (seen.has(key)) return true;
+    seen.add(key);
+    return false;
+  });
 }
 
 // バックアップの内容に入れ替えて保存する。保存できたら true、できなければ元のデータのまま false を返す
@@ -1875,7 +2325,7 @@ function importBackup(event) {
       return;
     }
     const d = result.data;
-    const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\n現在のデータはすべて上書きされます。必要なら先に「データを書き出す」で保存してください。`;
+    const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\nSupabase に保存している現在のデータは、すべてこの内容に置きかわります（ほかのパソコンやスマホで見ているデータも置きかわります）。必要なら先に「データを書き出す」で保存してください。`;
     confirmThen(message, () => {
       if (applyBackup(d)) {
         finish("バックアップを読み込みました", "success");
@@ -2262,3 +2712,4 @@ document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView
 fillSheetSettings();
 if (sheetConfig() === null) document.getElementById("sheetSettings").open = true;
 refreshAll();
+loadFromCloud();

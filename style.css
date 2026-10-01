@@ -934,6 +934,79 @@ small {
   }
 }
 
+/* Supabase への保存の状態（画面の上） */
+.cloud-status {
+  margin: -8px 0 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.cloud-status:empty {
+  display: none;
+}
+
+.cloud-status.cloud-status-error {
+  color: #b00020;
+  font-weight: bold;
+}
+
+/* Supabase に保存できなかったときの赤いお知らせ */
+.cloud-error {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-left: 5px solid #b00020;
+  border-radius: 8px;
+  background: #ffe5e9;
+  color: #7a0015;
+}
+
+.cloud-error[hidden] {
+  display: none;
+}
+
+.cloud-error p {
+  margin: 0 0 10px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/* 読み込みの間、画面全体をおおう */
+.cloud-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(238, 242, 238, 0.92);
+}
+
+.cloud-loading[hidden] {
+  display: none;
+}
+
+.cloud-loading-box {
+  width: 100%;
+  max-width: 520px;
+  padding: 20px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  text-align: center;
+}
+
+.cloud-loading-box p {
+  margin: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.cloud-loading-box button {
+  margin-top: 14px;
+}
+
 @media print {
   body {
     padding: 0;
@@ -952,6 +1025,9 @@ small {
   .list-tools,
   .backup-panel,
   .toast-area,
+  .cloud-status,
+  .cloud-error,
+  .cloud-loading,
   .no-print,
   .action-cell,
   .action-td,

@@ -4,11 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=23">
   </head>
   <body>
     <div class="container">
       <h1>🌾 米予約管理</h1>
+      <p id="cloudStatus" class="cloud-status" role="status" aria-live="polite"></p>
+      <div id="cloudError" class="cloud-error" role="alert" hidden>
+        <p id="cloudErrorText"></p>
+        <button type="button" id="cloudRetryButton" onclick="retryCloud()">もう一度保存する</button>
+      </div>
       <p id="printTitle" class="print-only"></p>
       <nav class="view-tabs" role="tablist" aria-label="表示切り替え">
         <button type="button" class="view-tab active" role="tab" aria-selected="true" aria-controls="reservationsView" data-view="reservationsView">予約登録・一覧</button>
@@ -408,7 +413,8 @@
           <p id="sheetStatus" class="backup-status sheet-status"></p>
           <div class="backup-actions">
             <button type="button" id="sheetSaveButton" onclick="saveToSheet()">全データを保存</button>
-            <button type="button" id="sheetLoadButton" class="cancel-button" onclick="loadFromSheet()">全データを読み込み</button>
+            <!-- Supabase に切り替えたため、スプレッドシートの内容で Supabase のデータを上書きしないよう、画面からは隠している（機能は残している） -->
+            <button type="button" id="sheetLoadButton" class="cancel-button" onclick="loadFromSheet()" hidden>全データを読み込み</button>
           </div>
           <details class="sheet-settings" id="sheetSettings">
             <summary>保存先の設定</summary>
@@ -427,6 +433,17 @@
     </div>
     <div id="docPrint" class="doc-print"></div>
     <div id="toastArea" class="toast-area" role="status" aria-live="polite"></div>
-    <script src="app.js?v=22"></script>
+    <!-- 読み込みの間は画面全体をおおう（読み込めなかったときは、理由と「もう一度読み込む」を出す） -->
+    <div id="cloudLoading" class="cloud-loading" role="alert">
+      <div class="cloud-loading-box">
+        <p id="cloudLoadingText">Supabase からデータを読み込んでいます…</p>
+        <button type="button" id="cloudReloadButton" onclick="location.reload()" hidden>もう一度読み込む</button>
+      </div>
+    </div>
+    <!-- 読み込む順番：supabase-js（CDN）→ 接続先の設定 → 接続用の関数 → アプリ本体 -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js" integrity="sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok" crossorigin="anonymous"></script>
+    <script src="supabase-config.js"></script>
+    <script src="supabase-client.js?v=23"></script>
+    <script src="app.js?v=24"></script>
   </body>
 </html>

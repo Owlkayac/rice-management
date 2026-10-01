@@ -1,12 +1,14 @@
 # Supabase 接続テストの手順
 
-米予約管理アプリから Supabase の `reservations` テーブルに、テスト予約の追加と一覧の取得ができるかを確かめる手順です。
+米予約管理アプリから Supabase の `reservations` テーブルを読めるか（接続できるか）を確かめる手順です。
 
-- テストには `supabase-test.html` を使います。いつもの予約管理の画面（`index.html`）とは別のページで、アプリのデータ（ブラウザに保存している予約など）には影響しません。
+> ※ アプリは Supabase にデータを保存するようになりました（手順は `SUPABASE_SWITCH.md`）。本物のデータにテスト用の予約が混ざらないよう、テストページの「テスト予約を追加」ボタンは無くし、「一覧を取得」だけにしました。
+
+- テストには `supabase-test.html` を使います。いつもの予約管理の画面（`index.html`）とは別のページです。読むだけで、データは変えません。
 - 関係するファイル
   - `supabase-config.js`：接続先（Project URL と Publishable key）。GitHub には上げません（`.gitignore` に入っています）
   - `supabase-config.example.js`：上のファイルの見本（値は空）
-  - `supabase-client.js`：Supabase への接続と、予約の追加・一覧取得の処理
+  - `supabase-client.js`：Supabase への接続と、テーブルの読み書きの処理
   - `supabase-test.html`：接続テスト用のページ
 
 ---
@@ -121,11 +123,7 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_xxxxxxxx";
 ## 3. テストする
 
 1. **「一覧を取得」** を押します。
-   - 成功すると、緑の枠に「成功：接続できましたが、予約は0件でした。」（または「成功：○件の予約を取得しました（新しい順）。」）と出ます。
-2. **「テスト予約を追加」** を押します。
-   - 成功すると、緑の枠に「成功：テスト予約を追加しました。」と出て、その下の表に追加した予約（id・name＝テスト予約・variety＝A・amount_kg＝5・status＝received・created_at）が1行出ます。
-3. もう一度 **「一覧を取得」** を押します。
-   - 追加したテスト予約が、表のいちばん上（新しい順）に出れば、接続テストは成功です。
+   - 緑の枠に「成功：接続できましたが、予約は0件でした。」または「成功：○件の予約を取得しました（新しい順）。」と出れば、接続テストは成功です。
 
 - 失敗したときは、赤い枠に「失敗：〜」と、エラーの内容・考えられる原因と直し方が出ます。次の「4. よくあるエラーと対処法」も見てください。
 - 詳しい内容は、ブラウザの開発者ツール（F12 キー、または右クリック →「検証」）の「Console」にも `[Supabase] 〜に失敗しました` として出ます。
@@ -141,32 +139,23 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_xxxxxxxx";
 | 「準備ができていません：… SUPABASE_URL の最後に、余計な部分（/rest/v1 や / など）が付いています。…」 | URL の後ろに余計な部分まで貼り付けている | `https://〜.supabase.co` までにする |
 | 「準備ができていません：supabase-config.js を読み込めませんでした。…」 | `supabase-config.js` が無い、または名前が違う | `supabase-config.example.js` をコピーして `supabase-config.js` を作る |
 | 「準備ができていません：supabase-js（CDN）を読み込めませんでした。…」 | インターネットにつながっていない | 接続を確かめて、ページを再読み込みする |
-| 「Failed to fetch」 | Project URL が間違っている、またはインターネットにつながっていない | URL を Supabase の画面からコピーし直す（最後に余計な文字や空白が無いか確かめる） |
+| 「Failed to fetch」（Safari では「Load failed」） | Project URL が間違っている、またはインターネットにつながっていない | URL を Supabase の画面からコピーし直す（最後に余計な文字や空白が無いか確かめる） |
 | 「Invalid API key」 | Publishable key が間違っている（別のプロジェクトのキー、一部だけコピーした、など） | キーをコピーし直す。Supabase からの英語のヒントに別の種類のキーの名前が出ることがありますが、使ってよいのは `sb_publishable_` で始まる Publishable key だけです |
 | エラーは出ないのに一覧が0件（Table Editor では行が見えるのに） | RLS で読み取り（SELECT）が許されていない（この場合、Supabase はエラーではなく0件を返します） | Authentication → Policies で、`reservations` テーブルに読み取りを許すポリシーがあるか確かめる |
 | 「permission denied」「row-level security」（コード 42501） | RLS（行ごとのアクセス制限）で止められている | Supabase の Authentication → Policies で、`reservations` テーブルに読み書きを許すポリシー（temp all）があるか確かめる。無ければ作り直す |
-| 「Could not find the table」（コード PGRST205） | テーブル名が違う | テーブル名が `reservations`（すべて小文字）になっているか確かめる |
-| 「Could not find the ○○ column」（コード PGRST204）、「column ○○ does not exist」（コード 42703） | 列の名前が違う、または列が無い | `name`・`variety`・`amount_kg`・`status`・`created_at` の列があるか確かめる |
-| コード 22P02 | 列の型と値が合っていない | `amount_kg` が数値の列（numeric など）になっているか確かめる |
-| コード 23502 | 入れなければいけない列に値が入っていない | Table Editor で列の設定（Is Nullable・既定値）を確かめる。`id` と `created_at` は自動で入る設定になっているか |
+| 「Could not find the table」（コード PGRST205） | テーブルが無い | `SUPABASE_SWITCH.md` の手順で、`supabase-schema.sql` を実行する |
+| 「Could not find the ○○ column」（コード PGRST204）、「column ○○ does not exist」（コード 42703） | 列の名前が違う、または列が無い | `SUPABASE_SWITCH.md` の手順で、`supabase-schema.sql` を実行する |
 
 - 設定を直したあとは、ページを **再読み込み**（F5、Mac は ⌘+R）してから、もう一度ボタンを押してください。
 
 ---
 
-## 5. Supabase の Table Editor でテストデータを確かめる・消す
+## 5. Supabase の Table Editor でデータを確かめる
 
-### 確かめる
 1. Supabase のダッシュボードで、対象のプロジェクトを開きます。
 2. 左のメニューの **Table Editor** を開きます。
 3. テーブルの一覧から **reservations** を選びます。
-4. テストページで追加した行（name が「テスト予約」）が表に出ていれば成功です。出ていないときは、右上の再読み込み（Refresh）を押してください。
-
-### 消す
-1. 消したい行の左端のチェックボックスにチェックを入れます（複数選べます）。
-2. 上に出る **Delete ○ rows**（○行を削除）を押します。
-3. 確認の画面で削除を押します。
-- 消した行は元に戻せません。「テスト予約」以外の行を選んでいないか、よく確かめてから消してください。
+4. アプリで登録した予約が表に出ていれば、テストページの「一覧を取得」でも同じ件数が出ます。出ていないときは、右上の再読み込み（Refresh）を押してください。
 
 ---
 
@@ -174,3 +163,4 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_xxxxxxxx";
 
 - 今は動作確認のため、RLS のポリシーが「全部許可（temp all）」になっています。このままだと、Project URL と Publishable key を知っている人なら誰でも、予約を読んだり、書き換えたり、消したりできます。
 - テストが終わったら、本番で使う前に、必要な人だけが読み書きできるポリシーに変えてください。
+- **ログイン機能を付けてポリシーを変えるまでは、実際のお客様のデータ（名前・電話番号・住所など）を入れないでください。** テスト用のデータだけで使ってください。

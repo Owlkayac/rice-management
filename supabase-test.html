@@ -91,9 +91,8 @@
 <body>
   <main>
     <h1>Supabase 接続テスト</h1>
-    <p class="note">Supabase の reservations テーブルに、テスト予約の追加と一覧の取得ができるかを確かめるページです。いつもの予約管理の画面（index.html）とは別で、アプリのデータには影響しません。</p>
+    <p class="note">Supabase の reservations テーブルから、予約の一覧を取得できるか（接続できるか）を確かめるページです。読むだけで、データは変えません。（アプリが Supabase に保存するようになったため、本物のデータに混ざらないよう、テスト予約を追加するボタンは無くしました）</p>
     <div class="buttons">
-      <button type="button" id="addTestButton">テスト予約を追加</button>
       <button type="button" id="fetchButton">一覧を取得</button>
     </div>
     <div id="result" class="result" role="status">ボタンを押すと、ここに結果が出ます。</div>
@@ -101,13 +100,13 @@
   </main>
 
   <!-- 読み込む順番：supabase-js（CDN）→ 接続先の設定 → 接続用の関数 -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js" integrity="sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok" crossorigin="anonymous"></script>
   <script src="supabase-config.js"></script>
   <script src="supabase-client.js"></script>
   <script>
     const resultBox = document.getElementById("result");
     const tableArea = document.getElementById("tableArea");
-    const buttons = [document.getElementById("addTestButton"), document.getElementById("fetchButton")];
+    const buttons = [document.getElementById("fetchButton")];
 
     // 結果を表示する（type は "success" / "error" / ""）。文字は textContent で入れる
     function showResult(type, text) {
@@ -130,16 +129,10 @@
       }
       // 列が無いときも「does not exist」と返るので、テーブルより先に列を確かめる
       if (error.code === "PGRST204" || error.code === "42703" || /Could not find the .* column|column .* does not exist/i.test(text)) {
-        return "テーブルに必要な列がありません。name・variety・amount_kg・status・created_at の列があるか確かめてください。";
+        return "テーブルに必要な列がありません。SUPABASE_SWITCH.md の手順で、supabase-schema.sql を実行したか確かめてください。";
       }
       if (error.code === "PGRST205" || error.code === "42P01" || /Could not find the table|relation .* does not exist/i.test(text)) {
-        return "reservations テーブルが見つかりません。テーブル名が reservations（小文字）になっているか確かめてください。";
-      }
-      if (error.code === "22P02") {
-        return "列の型と入れようとした値が合っていません。amount_kg が数値の列になっているか確かめてください。";
-      }
-      if (error.code === "23502") {
-        return "入れなければいけない列に値が入っていません。テーブルの列の設定（Is Nullable・既定値）を確かめてください。";
+        return "reservations テーブルが見つかりません。SUPABASE_SWITCH.md の手順で、supabase-schema.sql を実行したか確かめてください。";
       }
       return "";
     }
@@ -176,7 +169,7 @@
       tableArea.appendChild(table);
     }
 
-    // 処理の間はボタンを押せないようにする（二重に追加しないため）
+    // 処理の間はボタンを押せないようにする（続けて押されても、1回ずつ取得するため）
     async function runWithButtonsLocked(task) {
       buttons.forEach(b => b.disabled = true);
       try {
@@ -185,18 +178,6 @@
         buttons.forEach(b => b.disabled = false);
       }
     }
-
-    document.getElementById("addTestButton").onclick = () => runWithButtonsLocked(async () => {
-      showResult("", "テスト予約を追加しています…");
-      tableArea.innerHTML = "";
-      const { data, error } = await addSupabaseReservation({ name: "テスト予約", variety: "A", amountKg: 5, status: "received" });
-      if (error) {
-        showResult("error", errorText("テスト予約を追加できませんでした", error));
-        return;
-      }
-      showResult("success", "成功：テスト予約を追加しました。\n\n追加した予約：");
-      showTable(data || []);
-    });
 
     document.getElementById("fetchButton").onclick = () => runWithButtonsLocked(async () => {
       showResult("", "一覧を取得しています…");

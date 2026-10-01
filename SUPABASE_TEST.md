@@ -11,27 +11,27 @@
 
 ---
 
-## 0. 作業ブランチをパソコンに取ってくる
+## 0. ファイルをパソコンに取ってくる
 
-テスト用のファイルは、GitHub の作業ブランチ **`claude/agents-review-role-q24u6q`** に入っています（main にはまだ入っていません）。次のどれか1つの方法で、パソコンに取ってきてください。はじめての場合は「方法A」がいちばん簡単です。
+テスト用のファイルは、GitHub の **`main`**（いつものブランチ）に入っています。次のどれか1つの方法で、パソコンに取ってきてください。はじめての場合は「方法A」がいちばん簡単です。
+
+> ※ ファイルが main に入る前（プルリクエストがマージされる前）に試すときだけは、以下の `main` を、そのプルリクエストのブランチ名に読みかえてください。ブランチ名は、プルリクエストの画面の題名の下にある「… into main from ○○」の ○○ の部分です。
 
 ### 方法A：ZIP でダウンロードする（Git を使わない）
 1. ブラウザで GitHub のリポジトリ（`Owlkayac/rice-management`）を開きます。
-2. ファイル一覧の左上にある、ブランチ名のボタン（ふだんは `main` と出ている）を押します。
-3. 出てきた一覧から `claude/agents-review-role-q24u6q` を選びます（見つからないときは、検索欄に `agents-review` と入れます）。
-4. 緑色の **Code** ボタン → **Download ZIP** を押します。
-5. ダウンロードした ZIP ファイルを展開（解凍）します。
+2. ファイル一覧の左上にある、ブランチ名のボタンが `main` になっていることを確かめます（違うときは、押して `main` を選びます）。
+3. 緑色の **Code** ボタン → **Download ZIP** を押します。
+4. ダウンロードした ZIP ファイルを展開（解凍）します。
    - Mac：ZIP ファイルをダブルクリックします。
    - Windows：ZIP ファイルを右クリック → **すべて展開** を選びます（ダブルクリックだけでは中が見えるだけで、展開されません。この状態ではテストできません）。
-6. 展開したフォルダ（`rice-management-claude-agents-review-role-q24u6q` のような名前です。Windows では同じ名前のフォルダが二重になっていることがあります）を開き、`supabase-test.html` が見えるところまで進みます。**このフォルダが、この先の手順でいう「rice-management フォルダ」です。**
+5. 展開したフォルダ（`rice-management-main` のような名前です。Windows では同じ名前のフォルダが二重になっていることがあります）を開き、`supabase-test.html` が見えるところまで進みます。**このフォルダが、この先の手順でいう「rice-management フォルダ」です。**
 - ファイルがあとで更新されたときは、同じ手順でもう一度ダウンロードしてください。新しくできたフォルダには `supabase-config.js` が入っていないので、もう一度作るか、前のフォルダからコピーしてください。
 
 ### 方法B：GitHub Desktop を使う
 1. GitHub Desktop を開き、このリポジトリをまだ取ってきていなければ **File → Clone repository** で `Owlkayac/rice-management` を選んで取ってきます。
-2. 上の **Fetch origin** を押します（これをしないと、新しいブランチが一覧に出てきません）。
-3. 上の **Current Branch** を押し、`claude/agents-review-role-q24u6q` を選びます。
-4. **Pull origin** と出ていれば押して、最新の内容にします。
-5. **Repository → Show in Finder**（Windows は **Show in Explorer**）で、フォルダを開きます。
+2. 上の **Fetch origin** を押して、GitHub の最新の情報を受け取ります。
+3. 上の **Current Branch** が `main` になっていることを確かめます（違うときは、押して `main` を選びます）。**Pull origin** と出たら押して、最新の内容にします。
+4. **Repository → Show in Explorer**（Mac は **Show in Finder**）で、フォルダを開きます。
 
 ### 方法C：ターミナル（コマンド）を使う
 すでに Git を使っている人向けです。
@@ -40,14 +40,14 @@
   ```
   git clone https://github.com/Owlkayac/rice-management.git
   cd rice-management
-  git switch claude/agents-review-role-q24u6q
   ```
+  （マージ前に試すときは、このあとに `git switch ブランチ名` もします）
 - すでに取ってきてあるとき（rice-management フォルダの中で）
   ```
-  git fetch origin
-  git switch claude/agents-review-role-q24u6q
+  git switch main
   git pull
   ```
+  （マージ前に試すときは、先に `git fetch` をしてから `git switch ブランチ名` と `git pull` をします）
 
 ---
 

@@ -509,8 +509,26 @@ function detachCustomerIfRenamed(selectId, nameId) {
   return true;
 }
 
-// 空白をすべて取り除いた名前（「田中 一郎」と「田中一郎」のような表記の揺れを比べるため）
-const squashSpaces = t => String(t || "").replace(/\s+/g, "");
+// 同じ人かもしれない名前・住所を見つけるための比べ方。
+// compareKey：全角・半角の違い（NFKC という変換でそろえる）と空白をなくした形。「山田 太郎」と「山田太郎」、「ﾔﾏﾀﾞ」と「ヤマダ」を同じとみなす
+function compareKey(t) {
+  return String(t || "").normalize("NFKC").replace(/\s+/g, "");
+}
+
+// addressKey：住所用。compareKey に加えて、ハイフンに似た文字（－ − ‐ ― ー など）を「-」にそろえる。
+// 「1−2−3」と「1-2-3」は同じとみなすが、「1丁目2番3号」と「1-2-3」のような書き方の違いは拾えない。
+// 長音「ー」もハイフンとみなすので、名前には使わない（カタカナの名前が変わってしまうため）
+function addressKey(t) {
+  return compareKey(t).replace(/[‐‑‒–—―−ーｰ]/g, "-");
+}
+
+// 確認文に並べる顧客の一覧（スマホの確認ダイアログが長くなりすぎないよう、3人まで・住所は20文字まで）
+function customerListText(list) {
+  const short = t => (t.length > 20 ? `${t.slice(0, 20)}…` : t);
+  const lines = list.slice(0, 3).map(x => `・${short(String(x.name || ""))}（${short(String(x.address || "")) || "住所なし"}）`);
+  if (list.length > 3) lines.push(`ほか${list.length - 3}人`);
+  return lines.join("\n");
+}
 
 // 前後の空白を除いて、名前が同じ顧客の一覧
 function customersNamed(name) {
@@ -552,7 +570,7 @@ function linkOrCreateCustomer(item) {
 
 // 名前欄だけで入力したときの確認をしてから進める。
 // 同じ名前の顧客が2人以上いれば、どちらか分からないので止める。
-// 空白を詰めると同じ名前の顧客がいれば（入力の揺れで別人として登録されないように）確かめる
+// 空白や全角・半角の違いだけで名前が同じになる顧客がいれば（入力の揺れで別人として登録されないように）確かめる
 function confirmNewCustomerThen(item, action) {
   const name = String(item.name || "").trim();
   if (!item.customerId && customersNamed(name).length > 1) {
@@ -563,12 +581,12 @@ function confirmNewCustomerThen(item, action) {
     action();
     return;
   }
-  const similar = customers.find(c => squashSpaces(c.name) === squashSpaces(name));
-  if (!similar) {
+  const similar = customers.filter(c => compareKey(c.name) === compareKey(name));
+  if (!similar.length) {
     action();
     return;
   }
-  confirmThen(`顧客管理に「${similar.name}」が登録されています。\n同じ人なら「キャンセル」を押して、顧客の欄で「${similar.name}」を選んでください。\n別の人として「${name}」を新しく顧客に登録して保存しますか？`, action);
+  confirmThen(`よく似た名前の顧客が登録されています。\n${customerListText(similar)}\n\n同じ人なら「キャンセル」を押して、顧客の欄でその人を選んでください。\n別の人として「${name}」を新しく顧客に登録して保存しますか？`, action);
 }
 
 // 新しく顧客を登録したことを知らせる
@@ -1353,16 +1371,15 @@ function unlinkedGroupElement(g) {
   const amount = document.createElement("span");
   amount.textContent = `未出荷 ${formatKg(g.unshipped.remaining)}（${g.unshipped.items.map(i => `${i.label} ${formatKg(i.kg)}`).join("、")}）`;
   head.append(title, amount);
-  // 空白を詰めると同じ名前になる顧客がすでにいれば、その人の可能性が高いので、新しく登録せず編集で選んでもらう
-  const squash = t => String(t || "").replace(/\s+/g, "");
-  const similar = customers.find(c => squash(c.name) === squash(g.name));
+  // 空白や全角・半角の違いだけで同じ名前になる顧客がすでにいれば、その人の可能性が高いので、新しく登録せず編集で選んでもらう
+  const similar = customers.filter(c => compareKey(c.name) === compareKey(g.name));
   let guide = "";
   if (g.missingCustomer) {
     guide = "登録されていた顧客が見つかりません（削除された可能性があります）。「編集」で顧客を選び直してください。";
   } else if (g.noName) {
     guide = "名前が入っていません。「編集」で顧客を選んでください。";
-  } else if (similar) {
-    guide = `顧客管理に「${similar.name}」が登録されています。同じ人なら、「編集」でその顧客を選んでください。`;
+  } else if (similar.length) {
+    guide = `顧客管理に${similar.map(c => `「${c.name}」`).join("")}が登録されています。同じ人なら、「編集」でその顧客を選んでください。`;
   } else if (g.hasSpacedName) {
     guide = "名前の前後に空白が入っているため、顧客として登録しても結びつきません。「編集」で顧客を選ぶか、名前を直してください。";
   } else {
@@ -1466,18 +1483,37 @@ function saveCustomer() {
     notify("顧客名を入力してください", "warn");
     return;
   }
-  const original = editingCustomerId ? customers.find(x => x.customerId === editingCustomerId) : null;
-  const nameChanged = !original || squashSpaces(original.name) !== squashSpaces(name);
-  if (nameChanged && customers.some(x => x.customerId !== editingCustomerId && squashSpaces(x.name) === squashSpaces(name))) {
-    confirmThen(`「${name}」という名前の顧客がすでに登録されています。\n同じ人なら、新しく登録せず既存の顧客を使ってください。\n別の人として、このまま保存しますか？`, () => commitCustomer(name, furigana));
+  const address = document.getElementById("customerAddress").value.trim();
+  const warning = duplicateCustomerWarning(name, address);
+  if (warning) {
+    confirmThen(warning, () => commitCustomer(name, furigana, address));
   } else {
-    commitCustomer(name, furigana);
+    commitCustomer(name, furigana, address);
   }
 }
 
-function commitCustomer(name, furigana) {
+// 名前か住所が同じ顧客がほかにいれば、保存してよいか確かめる文を返す（いなければ ""）。
+// 編集で名前・住所を変えていないときは、前から同じだったものなので聞かない
+function duplicateCustomerWarning(name, address) {
+  const original = editingCustomerId ? customers.find(x => x.customerId === editingCustomerId) : null;
+  const others = customers.filter(x => x.customerId !== editingCustomerId);
+  const nameChanged = !original || compareKey(original.name) !== compareKey(name);
+  const addressChanged = !original || addressKey(original.address) !== addressKey(address);
+  const sameName = nameChanged ? others.filter(x => compareKey(x.name) === compareKey(name)) : [];
+  const sameAddress = addressChanged && addressKey(address) ? others.filter(x => addressKey(x.address) === addressKey(address)) : [];
+  if (!sameName.length && !sameAddress.length) return "";
+  // 同じ人が両方に出ないように、名前も住所も同じ顧客は1回だけ並べる
+  const matches = [...new Set([...sameName, ...sameAddress])];
+  const reasons = [sameName.length ? "名前" : "", sameAddress.length ? "住所" : ""].filter(Boolean).join("・");
+  const head = `${reasons}が同じ顧客がすでに登録されています。\n${customerListText(matches)}\n\n`;
+  // 編集のときは、家族で同じ住所などもよくあるので、「間違いなら直す」案内にする
+  if (original) return `${head}入力を間違えたなら「キャンセル」を押して直してください。\n別の人で間違いなければ、このまま保存しますか？`;
+  return `${head}同じ人なら「キャンセル」を押して、新しく登録せず既存の顧客を使ってください。\n別の人として、このまま登録しますか？`;
+}
+
+function commitCustomer(name, furigana, address) {
   const c = {
-    customerId: editingCustomerId || uid(), name, furigana, phone: document.getElementById("customerPhone").value.trim(), address: document.getElementById("customerAddress").value.trim(), memo: document.getElementById("customerMemo").value.trim()
+    customerId: editingCustomerId || uid(), name, furigana, phone: document.getElementById("customerPhone").value.trim(), address, memo: document.getElementById("customerMemo").value.trim()
   };
   if (editingCustomerId) {
     customers = customers.map(x => x.customerId === editingCustomerId ? c : x);

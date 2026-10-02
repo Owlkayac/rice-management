@@ -594,11 +594,54 @@ function notifyNewCustomer(c) {
   if (c) notify(`「${c.name}」を新しい顧客として顧客管理に登録しました。電話番号・住所などは「顧客管理」の「編集」で追加できます（名前を間違えたときも、そこで直せます）`, "info", 8000);
 }
 
+// 顧客を見分けるための表示名（顧客の id → { label：表示名, number：「同じ名前のN人目」の印（無ければ ""） }）。
+// 名前がよく似た顧客（空白・全角半角の違いだけ）がほかにもいるときだけ、
+// 電話番号の下4桁・住所の頭・ふりがな（同じ名前の人どうしで読みが違うときだけ）を添える。
+// （メモはお店側だけで見る内容のことがあるので、お客さんの前で開く予約・出荷の欄には出さない）
+// それでも見分けられない人には「同じ名前のN人目」（顧客の並び順）を添えて、必ず見分けられるようにする
+function customerDisplayNames() {
+  const head = t => {
+    const chars = Array.from(String(t || "").trim());
+    return chars.length > 10 ? `${chars.slice(0, 10).join("")}…` : chars.join("");
+  };
+  const groups = new Map();
+  customers.forEach(c => {
+    const key = compareKey(c.name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
+  });
+  const names = new Map();
+  groups.forEach(group => {
+    if (group.length < 2) {
+      names.set(group[0].customerId, { label: group[0].name, number: "" });
+      return;
+    }
+    const readings = new Set(group.map(c => compareKey(c.furigana)));
+    const hintTexts = group.map(c => {
+      const phone = String(c.phone || "").normalize("NFKC").replace(/\D/g, "");
+      return [
+        phone.length >= 4 ? `電話…${phone.slice(-4)}` : "",
+        head(c.address),
+        readings.size > 1 ? head(c.furigana) : ""
+      ].filter(Boolean).join("・");
+    });
+    group.forEach((c, n) => {
+      // 名前は空白の違いが画面では見えにくいので、添える情報だけで重なりを判定する（同じグループの名前は compareKey で同じ）
+      const clash = hintTexts.filter(h => compareKey(h) === compareKey(hintTexts[n])).length > 1;
+      const number = clash ? `［同じ名前の${n + 1}人目］` : "";
+      const label = `${c.name}${hintTexts[n] ? `（${hintTexts[n]}）` : ""}${number}`;
+      names.set(c.customerId, { label, number });
+    });
+  });
+  return names;
+}
+
 // 顧客の選択肢を作り直す。選んでいた顧客の名前が変わっていたら名前欄も今の名前にそろえ、
 // 選んでいた顧客が消えていたら名前欄も空にする（名前欄と選択の食い違いを残さないため）
 function refreshCustomerSelects() {
   const placeholder = "新しい顧客（名前欄に入力）";
-  const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${esc(c.customerId)}">${esc(c.name)}</option>`).join("");
+  const names = customerDisplayNames();
+  const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${esc(c.customerId)}">${esc(names.get(c.customerId).label)}</option>`).join("");
   [["customerSelect", "name"], ["shipmentCustomerSelect", "shipmentName"]].forEach(([id, nameId]) => {
     const e = document.getElementById(id);
     const nameInput = document.getElementById(nameId);
@@ -1277,7 +1320,9 @@ function getVisibleCustomers() {
 
 function displayCustomers() {
   const arr = getVisibleCustomers();
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  // 同じ名前の人を番号で見分けているときは、予約・出荷の顧客の欄と同じ番号を付ける（電話・住所は一覧の別の欄にあるので添えない）
+  const names = customerDisplayNames();
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
   // ボタンの処理は onclick 属性に顧客の id を書き込まず、ここで結びつける
   // （読み込んだバックアップの id に細工があっても、スクリプトとして動かないようにするため）
   const rows = document.getElementById("customerList").querySelectorAll("tr");
@@ -1523,6 +1568,10 @@ function commitCustomer(name, furigana, address) {
   save(CUSTOMERS_STORAGE_KEY, customers);
   cancelCustomerEdit();
   refreshAll();
+  // 同じ名前の人と見分けがつかず番号で区別しているときは、見分けるための情報を足してもらう（番号は顧客の削除などでずれるため）
+  if (customerDisplayNames().get(c.customerId).number) {
+    notify(`「${c.name}」という名前の顧客がほかにもいます。見分けられるように、電話番号か住所を入れてください（「顧客管理」の「編集」から）`, "warn", 10000);
+  }
 }
 
 function cancelCustomerEdit() {

@@ -524,7 +524,11 @@ function addressKey(t) {
 
 // 確認文に並べる顧客の一覧（スマホの確認ダイアログが長くなりすぎないよう、3人まで・住所は20文字まで）
 function customerListText(list) {
-  const short = t => (t.length > 20 ? `${t.slice(0, 20)}…` : t);
+  // 1文字ずつに分けてから数える（「𠮷」や絵文字などが途中で割れて文字化けしないように）
+  const short = t => {
+    const chars = Array.from(t);
+    return chars.length > 20 ? `${chars.slice(0, 20).join("")}…` : t;
+  };
   const lines = list.slice(0, 3).map(x => `・${short(String(x.name || ""))}（${short(String(x.address || "")) || "住所なし"}）`);
   if (list.length > 3) lines.push(`ほか${list.length - 3}人`);
   return lines.join("\n");
@@ -536,13 +540,28 @@ function customersNamed(name) {
   return n ? customers.filter(c => String(c.name || "").trim() === n) : [];
 }
 
-// 顧客を選ばずに名前欄へ登録済みの顧客と同じ名前を入れたら、その顧客を選ぶ（同じ名前の顧客が1人だけのとき）。
+// 名前欄を離れたときの確認で「キャンセル」された（別の人だと答えた）名前。保存のときに同じ確認をくり返さず、案内を出して止める
+const declinedSameNames = new Set();
+
+// 同じ名前の顧客につなぐ前に見せる確認文（同姓同名の別人の予約が、既存の顧客に混ざらないように）
+function sameNameConfirmText(c) {
+  return `顧客管理に登録済みの「${customerDisplayNames().get(c.customerId).label}」につなぎます。\n\n同じ人なら「OK」を押してください。\n同姓同名の別の人なら「キャンセル」を押し、先に「顧客管理」でその人を登録してから、顧客の欄で選んでください。`;
+}
+
+// 顧客を選ばずに名前欄へ登録済みの顧客と同じ名前を入れたら、確認してからその顧客を選ぶ（同じ名前の顧客が1人だけのとき）。
 // 選べば、出荷では「対象の予約」も選べるようになる。選んだら true を返す
 function selectCustomerByTypedName(selectId, nameId) {
   const select = document.getElementById(selectId);
   if (select.value) return false;
   const found = customersNamed(document.getElementById(nameId).value);
   if (found.length !== 1) return false;
+  // ここではフォームの欄を変えるだけで保存はしないので、confirmThen（保存前の最新確認つき）ではなく confirm で聞く
+  const name = String(found[0].name || "").trim();
+  if (!confirm(sameNameConfirmText(found[0]))) {
+    declinedSameNames.add(name);
+    return false;
+  }
+  declinedSameNames.delete(name);
   select.value = found[0].customerId;
   document.getElementById(nameId).value = found[0].name;
   notify(`顧客管理の「${found[0].name}」を選びました`, "info");
@@ -577,8 +596,18 @@ function confirmNewCustomerThen(item, action) {
     notify(`「${name}」という名前の顧客が複数登録されています。顧客の欄でどの人かを選んでください`, "warn", 8000);
     return;
   }
-  if (item.customerId || !name || customersNamed(name).length) {
+  if (item.customerId || !name) {
     action();
+    return;
+  }
+  // 同じ名前の顧客が1人いれば、その人につなぐ前に確かめる（同姓同名の別人が混ざらないように）
+  const same = customersNamed(name);
+  if (same.length && declinedSameNames.has(name)) {
+    notify(`「${name}」は、登録済みの顧客とは別の人として入力されています。先に「顧客管理」でその人を登録してから、顧客の欄で選んでください（同じ人なら、顧客の欄で「${name}」を選んでください）`, "warn", 12000);
+    return;
+  }
+  if (same.length) {
+    confirmThen(sameNameConfirmText(same[0]), action);
     return;
   }
   const similar = customers.filter(c => compareKey(c.name) === compareKey(name));
@@ -699,7 +728,14 @@ function addReservation() {
   }
   const linked = linkedShipmentCount(editingReservationId);
   const before = reservations.find(x => x.id === editingReservationId);
-  if (linked && before && customerChangedSinceEditStart()) {
+  // 顧客の登録が見つからない予約は、出荷が紐づいていても顧客を選び直せる（紐づいた出荷も一緒に移す。commitReservation）
+  const customerMissing = !!before && !customerFor(before);
+  // 紐づいた出荷を編集中だと、出荷のフォームに古い顧客が残って混乱するので、先に終わらせてもらう（確認を出す前に止める）
+  if (linked && customerMissing && editingShipmentId !== null && linkedShipments(before.id).some(x => x.id === editingShipmentId)) {
+    notify("この予約に紐づいている出荷を編集中です。出荷の編集を保存するかキャンセルしてから、予約を保存してください", "warn", 8000);
+    return;
+  }
+  if (linked && before && !customerMissing && customerChangedSinceEditStart()) {
     notify(`この予約には出荷が${linked}件紐づいているため、顧客は変更できません。${customerRestoreHint()}顧客を変えるには、先に紐づいた出荷を編集して、対象の予約を「特定の予約に紐づけない」にしてください。`, "warn", 12000);
     return;
   }
@@ -718,7 +754,32 @@ function addReservation() {
       checkStock();
     }
   };
-  confirmNewCustomerThen(r, checkVariety);
+  const checkMoveShipments = () => {
+    if (!linked || !customerMissing) {
+      checkVariety();
+      return;
+    }
+    const linkedList = linkedShipments(before.id);
+    // 選んだ顧客（いなければ、保存のときに新しく登録される）
+    const chosen = r.customerId ? findCustomer(r.customerId) : customersNamed(r.name)[0];
+    // 紐づいた出荷の中に、登録済みの別の顧客の出荷があれば止める（その人の正しい出荷を、別の人に移さないため）
+    const others = [...new Set(linkedList.map(customerFor).filter(c => c && c !== chosen))];
+    if (others.length) {
+      const labels = customerDisplayNames();
+      const list = others.map(c => `「${labels.get(c.customerId).label}」`).join("");
+      // 別の人が1人なら、その人を選べば保存できる。2人以上なら、どの人を選んでもほかの人の出荷が残るので、先に紐づけを外してもらう
+      const next = others.length === 1
+        ? `同じ人なら、顧客の欄で${list}を選んでください`
+        : "先に「出荷管理」で、この予約の顧客にしない人の出荷を「編集」し、対象の予約を「特定の予約に紐づけない」にしてください";
+      notify(`紐づいている出荷に、${list}の出荷があります。その人の出荷を別の顧客に移さないよう、保存を止めました。${next}`, "warn", 12000);
+      return;
+    }
+    const chosenText = chosen ? `「${customerDisplayNames().get(chosen.customerId).label}」` : `「${r.name}」（新しい顧客として顧客管理に登録します）`;
+    const reason = before.customerId ? "この予約の顧客の登録が見つからないため" : "この予約は顧客管理に登録されていない名前のため";
+    const nowNames = [...new Set(linkedList.map(x => customerFor(x)?.name || `${x.name || "名前なし"}（登録なし）`))].join("、");
+    confirmThen(`${reason}、顧客を${chosenText}にします。\n\n紐づいている出荷${linked}件の顧客も同じ顧客にそろえ、予約との紐づけはそのまま残します（今の出荷の顧客：${nowNames}）。\nこのまま保存しますか？`, checkVariety);
+  };
+  confirmNewCustomerThen(r, checkMoveShipments);
 }
 
 // 編集を始めたときから、利用者が顧客を変えたか（フォームの値で判定する。保存データの顧客の引き当て方の違いで誤判定しないため）
@@ -747,7 +808,23 @@ function commitReservation(r) {
     refreshAll();
     return;
   }
+  // 顧客の登録が見つからない予約だったかを、顧客を結びつける前に調べておく
+  const before = reservations.find(x => x.id === editingReservationId);
+  const customerWasMissing = !!before && !customerFor(before);
   const newCustomer = linkOrCreateCustomer(r);
+  // 顧客の登録が見つからなかった予約の顧客を選び直したら、紐づいた出荷も同じ顧客に移す
+  // （予約と出荷の顧客がそろっていないと、出荷の編集で「対象の予約」を選べなくなるため）
+  // 移すのは、登録が見つからない出荷と、名前だけで同じ顧客につながっている出荷だけ（登録済みの別の顧客の出荷は動かさない。addReservation で止めている）
+  const owner = findCustomer(r.customerId);
+  const ownerName = owner ? owner.name : r.name;
+  // すでにその顧客の id と名前になっている出荷は数えない（変わらない出荷まで「変えました」と知らせないため）
+  const moved = customerWasMissing && r.customerId
+    ? linkedShipments(before.id).filter(x => (!customerFor(x) || customerFor(x).customerId === r.customerId) && (x.customerId !== r.customerId || x.name !== ownerName))
+    : [];
+  moved.forEach(s => {
+    s.customerId = r.customerId;
+    s.name = ownerName;
+  });
   if (editingReservationId === null) {
     r.id = uid("reservation");
     r.status = "received";
@@ -759,11 +836,12 @@ function commitReservation(r) {
     reservations[i] = r;
     cancelEdit();
   }
-  if (newCustomer) {
+  if (newCustomer || moved.length) {
     saveIdLinkedData();
   } else {
     save("reservations", reservations);
   }
+  if (moved.length) notify(`紐づいている出荷${moved.length}件の顧客も「${owner ? owner.name : r.name}」に変えました`, "info", 8000);
   clearReservation();
   refreshAll();
   notifyNewCustomer(newCustomer);
@@ -796,6 +874,12 @@ function cancelEdit() {
   updateCustomerLockNote();
 }
 
+// 予約の顧客の登録が見つからない（顧客の id はあるのにその顧客がいない、または名前だけで同じ名前の顧客がいない）か
+function reservationCustomerMissing(reservationId) {
+  const r = reservations.find(x => x.id === reservationId);
+  return !!r && !customerFor(r);
+}
+
 // 出荷が紐づいている予約を編集している間は、顧客欄の下に「顧客は変更できません」と出しておく
 function updateCustomerLockNote() {
   const note = document.getElementById("customerLockNote");
@@ -805,6 +889,12 @@ function updateCustomerLockNote() {
   note.hidden = !count;
   note.textContent = "";
   if (!count) return;
+  if (reservationCustomerMissing(editingReservationId)) {
+    const r = reservations.find(x => x.id === editingReservationId);
+    const reason = r.customerId ? "顧客の登録が見つからないため" : "顧客管理に登録されていない名前のため";
+    note.textContent = `${reason}、顧客を選び直せます（紐づいた出荷${count}件の顧客も一緒に変わります）`;
+    return;
+  }
   // 画面が狭いときは「、」のところで折り返すように、2つに分けて入れる
   [`出荷が${count}件紐づいているため、`, "顧客は変更できません"].forEach(text => {
     const span = document.createElement("span");
@@ -814,6 +904,8 @@ function updateCustomerLockNote() {
 }
 
 function clearReservation() {
+  // 入力をやり直すときは、名前欄の確認で「別の人」と答えた記録も消す
+  declinedSameNames.clear();
   document.getElementById("name").value = "";
   document.getElementById("kg").value = "";
   document.getElementById("customerSelect").value = "";
@@ -1124,12 +1216,45 @@ function addShipment() {
   }
   // 編集で品種が変わるときは、保存する前に必ず確かめる（予約に合わせて自動で変わった場合に気づけるように）
   const original = editingShipmentId === null ? null : shipments.find(x => x.id === editingShipmentId);
+  // 確認が要るものを、後ろから順に重ねていく（実行は 名前 → 予約の紐づけ → 品種 → 保存 の順）
+  let proceed = () => commitShipment(s);
   if (original && !sameVariety(original.variety, s.variety)) {
     const hint = s.reservationId ? "\n\n品種は、紐づけた予約に合わせています。元の品種のままにするなら「キャンセル」を押し、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください。" : "";
-    confirmNewCustomerThen(s, () => confirmThen(`この出荷の品種を「${varietyLabel(original.variety)}」から「${varietyLabel(s.variety)}」に変えて保存しますか？${hint}`, () => commitShipment(s)));
-    return;
+    const next = proceed;
+    proceed = () => confirmThen(`この出荷の品種を「${varietyLabel(original.variety)}」から「${varietyLabel(s.variety)}」に変えて保存しますか？${hint}`, next);
   }
-  confirmNewCustomerThen(s, () => commitShipment(s));
+  // 編集で予約との紐づけが外れる・変わるときは、黙って外さずに確かめる（予約の「出荷済みの量」が変わるため）
+  if (original && original.reservationId && original.reservationId !== s.reservationId) {
+    const next = proceed;
+    const message = reservations.some(x => x.id === original.reservationId)
+      ? `${reservationLinkText(original.reservationId)}\n\nこの出荷と予約との紐づけが${s.reservationId ? "別の予約に変わります" : "外れます"}。その予約の「出荷済みの量」から、この出荷の分が減ります。このまま保存しますか？`
+      : "この出荷が紐づいていた予約は見つかりません（削除された可能性があります）。見つからない予約との紐づけを外して保存しますか？";
+    proceed = () => confirmThen(message, next);
+  }
+  confirmNewCustomerThen(s, proceed);
+}
+
+// 出荷の編集で、紐づいていた予約を「対象の予約」に選べなかった理由を説明する文
+function unselectableReservationReason(reservationId) {
+  const r = reservations.find(x => x.id === reservationId);
+  if (!r) return "この出荷が紐づいていた予約が見つかりません（削除された可能性があります）。";
+  const where = `（${reservationLinkText(reservationId)}）`;
+  if (!shipmentCustomerSelect.value) {
+    const fixReservation = customerFor(r) ? "" : "予約の顧客も見つからないときは、この編集をキャンセルし、先に予約を「編集」して顧客を選び直してください（紐づいている出荷も一緒にその顧客に移ります）。";
+    return `この出荷の顧客の登録が見つからないため、紐づいていた予約を「対象の予約」に選べません${where}。先に顧客の欄で顧客を選び直すと、その人の予約なら「対象の予約」に選べます。${fixReservation}`;
+  }
+  const owner = customerFor(r);
+  // 予約側を直すときに選ぶべき顧客（この出荷の顧客。ほかの人を選ぶと、この出荷を動かさないよう予約の保存で止まる）
+  const fix = `直すには、この編集をキャンセルし、先に予約を「編集」して顧客を「${customerDisplayNames().get(shipmentCustomerSelect.value)?.label || ""}」にしてください（紐づけは残ります）。`;
+  if (!owner && !r.customerId) return `紐づいていた予約は、顧客管理に登録されていない名前「${r.name || "名前なし"}」の予約のため、「対象の予約」に選べません${where}。${fix}`;
+  if (!owner) return `紐づいていた予約の顧客の登録が見つからないため、その予約を「対象の予約」に選べません${where}。${fix}`;
+  return `紐づいていた予約の顧客「${owner.name}」が、この出荷の顧客と違うため、その予約を「対象の予約」に選べません${where}。`;
+}
+
+// 出荷が今紐づいている予約を、確認文や案内で見せるための文
+function reservationLinkText(reservationId) {
+  const r = reservations.find(x => x.id === reservationId);
+  return r ? `今の紐づけ先の予約：${varietyLabel(r.variety)}・${monthLabel(r.month)}・${formatKg(r.kg)}` : "今の紐づけ先の予約は見つかりません（削除された可能性があります）";
 }
 
 function commitShipment(s) {
@@ -1187,6 +1312,10 @@ function editShipment(i) {
   // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
   shipmentName.value = customer ? customer.name : s.name || "";
   refreshShipmentReservationOptions(s.reservationId);
+  // 顧客の登録が見つからないなどで、紐づいていた予約を「対象の予約」に選べないときは、先に知らせる
+  if (s.reservationId && document.getElementById("shipmentReservation").value !== s.reservationId) {
+    notify(`${unselectableReservationReason(s.reservationId)}このまま保存すると紐づけが外れます（保存の前に確認が出ます）。`, "warn", 12000);
+  }
   // 予約に紐づいている（品種欄が予約に合わせて固定されている）ときだけ、品種の食い違いを知らせる
   if (shipmentVariety.disabled && !sameVariety(shipmentVariety.value, s.variety)) {
     notify(`この出荷は、紐づけた予約と品種が違います（出荷「${varietyLabel(s.variety)}」／予約「${varietyLabel(shipmentVariety.value)}」）。品種を予約に合わせて「${varietyLabel(shipmentVariety.value)}」にしました。元の品種のままにするなら、対象の予約を「特定の予約に紐づけない」にしてから品種を選び直してください`, "warn", 12000);
@@ -1204,6 +1333,7 @@ function cancelShipmentEdit() {
 
 // keepCustomerId を渡すと、その顧客を選んだままにする（省略すると顧客の選択も空にする）
 function clearShipmentForm(keepCustomerId = "") {
+  declinedSameNames.clear();
   ["shipmentKg", "shipmentMemo"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("shipmentDate").value = todayString();
   // 先に顧客の選択を決めてから、予約の選択肢をその顧客の最新の予約で作り直す（前の顧客の予約を残さない）
@@ -1339,7 +1469,9 @@ function displayUnshippedCustomers() {
   const body = document.getElementById("unshippedCustomerList");
   if (!body) return;
   const list = customers.map(c => ({ c, s: customerStats(c) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
-  body.innerHTML = list.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name)}</td><td data-label="未出荷">${formatKg(s.unshipped)}</td><td data-label="内訳">${esc(s.unshippedItems.map(i => `${i.label} ${formatKg(i.kg)}`).join("、"))}</td><td data-label="電話番号">${esc(c.phone)}</td><td class="action-td"><button class="detail-button">詳細</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty-message">未出荷の顧客はいません</td></tr>';
+  // 同じ名前の人を番号で見分けているときは、顧客一覧と同じ番号を付ける
+  const names = customerDisplayNames();
+  body.innerHTML = list.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="未出荷">${formatKg(s.unshipped)}</td><td data-label="内訳">${esc(s.unshippedItems.map(i => `${i.label} ${formatKg(i.kg)}`).join("、"))}</td><td data-label="電話番号">${esc(c.phone)}</td><td class="action-td"><button class="detail-button">詳細</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty-message">未出荷の顧客はいません</td></tr>';
   // 「詳細」は顧客管理タブの詳細を開く（顧客の id は onclick 属性に書き込まず、ここで結びつける）
   const rows = body.querySelectorAll("tr");
   list.forEach(({ c }, n) => {
@@ -1420,7 +1552,7 @@ function unlinkedGroupElement(g) {
   const similar = customers.filter(c => compareKey(c.name) === compareKey(g.name));
   let guide = "";
   if (g.missingCustomer) {
-    guide = "登録されていた顧客が見つかりません（削除された可能性があります）。「編集」で顧客を選び直してください。";
+    guide = "登録されていた顧客が見つかりません（削除された可能性があります）。「編集」で顧客を選び直してください。予約を先に直すと、その予約に紐づいている出荷も一緒にその顧客に移ります（紐づけは残ります）。";
   } else if (g.noName) {
     guide = "名前が入っていません。「編集」で顧客を選んでください。";
   } else if (similar.length) {
@@ -1560,12 +1692,25 @@ function commitCustomer(name, furigana, address) {
   const c = {
     customerId: editingCustomerId || uid(), name, furigana, phone: document.getElementById("customerPhone").value.trim(), address, memo: document.getElementById("customerMemo").value.trim()
   };
+  // 名前だけでこの顧客につながっている予約・出荷（顧客の id が入っていないもの）を、名前を変える前に探しておく。
+  // あとで id を書き込み、名前を直してもつながりが切れないようにする
+  const nameLinkedTo = target => (target ? [...reservations, ...shipments].filter(x => !x.customerId && customerFor(x) === target) : []);
+  let nameLinked;
   if (editingCustomerId) {
+    nameLinked = nameLinkedTo(customers.find(x => x.customerId === editingCustomerId));
     customers = customers.map(x => x.customerId === editingCustomerId ? c : x);
   } else {
     customers.push(c);
+    nameLinked = nameLinkedTo(c);
   }
-  save(CUSTOMERS_STORAGE_KEY, customers);
+  nameLinked.forEach(x => {
+    x.customerId = c.customerId;
+  });
+  if (nameLinked.length) {
+    saveIdLinkedData();
+  } else {
+    save(CUSTOMERS_STORAGE_KEY, customers);
+  }
   cancelCustomerEdit();
   refreshAll();
   // 同じ名前の人と見分けがつかず番号で区別しているときは、見分けるための情報を足してもらう（番号は顧客の削除などでずれるため）
@@ -1618,7 +1763,7 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name + customerDisplayNames().get(c.customerId).number)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
   // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
   d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
   d.querySelector(".detail-close-button").onclick = () => d.hidden = true;
@@ -1633,8 +1778,11 @@ function mergeFormHtml(c) {
   const others = customers.filter(x => x.customerId !== c.customerId);
   if (!others.length) return "";
   const names = customerDisplayNames();
-  const similar = others.filter(x => compareKey(x.name) === compareKey(c.name));
-  const rest = others.filter(x => compareKey(x.name) !== compareKey(c.name));
+  // どちらも、顧客一覧と同じく、ふりがな（無ければ名前）の順に並べる
+  const reading = x => String(x.furigana || x.name || "");
+  const byReading = (a, b) => reading(a).localeCompare(reading(b), "ja");
+  const similar = others.filter(x => compareKey(x.name) === compareKey(c.name)).sort(byReading);
+  const rest = others.filter(x => compareKey(x.name) !== compareKey(c.name)).sort(byReading);
   const options = [...similar, ...rest].map(x => `<option value="${esc(x.customerId)}">${esc(names.get(x.customerId).label)}</option>`).join("");
   return `<div class="detail-card merge-card no-print"><h3>ほかの顧客とまとめる</h3><p class="section-help">同じ人を2人分登録してしまったときに使います。この顧客の予約・出荷をすべて、選んだ顧客に移してから、この顧客を削除します。</p><label for="mergeTarget">まとめる先の顧客</label><select id="mergeTarget"><option value="">選んでください</option>${options}</select><button type="button" class="tool-button merge-button">選んだ顧客にまとめる</button></div>`;
 }
@@ -1672,8 +1820,16 @@ function mergeCustomer(fromId, toId) {
   const s = customerStats(from);
   const names = customerDisplayNames();
   const kept = mergeKeptValues(from, to);
-  const keptText = kept.length ? `\n\n次の内容は「${to.name}」の内容を残し、「${from.name}」の内容はメモに書き写します。\n${kept.map(k => `・${k.label}：${to[k.key]}（${from.name}：${from[k.key]}）`).join("\n")}` : "";
-  confirmThen(`「${names.get(from.customerId).label}」を「${names.get(to.customerId).label}」にまとめますか？\n\n予約${s.rs.length}件・出荷${s.ss.length}件を「${to.name}」に移し、「${from.name}」は顧客管理から削除します。\n電話番号・住所・ふりがなが「${to.name}」で空なら、「${from.name}」の内容を入れます。メモは両方をつなげます。${keptText}\n\nこの操作は元に戻せません。`, () => {
+  // スマホの確認ダイアログが長くなりすぎないよう、長い値は20文字で切って見せる（customerListText と同じ）
+  const short = t => {
+    const chars = Array.from(String(t || ""));
+    return chars.length > 20 ? `${chars.slice(0, 20).join("")}…` : chars.join("");
+  };
+  // 名前も長いと何度も並んで読みにくいので切る（見分けるための表示名 label は、末尾の番号が消えないよう切らない）
+  const fromName = short(from.name);
+  const toName = short(to.name);
+  const keptText = kept.length ? `\n\n次の内容は「${toName}」の内容を残し、「${fromName}」の内容はメモに書き写します。\n${kept.map(k => `・${k.label}：${short(to[k.key])}（${fromName}：${short(from[k.key])}）`).join("\n")}` : "";
+  confirmThen(`「${names.get(from.customerId).label}」を「${names.get(to.customerId).label}」にまとめますか？\n\n予約${s.rs.length}件・出荷${s.ss.length}件を「${toName}」に移し、「${fromName}」は顧客管理から削除します。\n電話番号・住所・ふりがなが「${toName}」で空なら、「${fromName}」の内容を入れます。メモは両方をつなげます。${compareKey(from.name) !== compareKey(to.name) ? `\n名前が違うため、「${fromName}」という名前はメモに「旧名」として残します。` : ""}${keptText}\n\nこの操作は元に戻せません。`, () => {
     // 確認の間に変わっていないか、もう一度探し直す
     const fromNow = findCustomer(fromId);
     const toNow = findCustomer(toId);
@@ -1690,15 +1846,25 @@ function mergeCustomer(fromId, toId) {
     shipments.forEach(move);
     // 両方に入っていて違う値は、まとめる元の値が消えないよう、メモに書き写す
     const keptNotes = mergeKeptValues(fromNow, toNow).map(k => `${k.label}（${fromNow.name}）：${String(fromNow[k.key]).trim()}`);
+    // 名前が違う人をまとめたとき（旧姓・屋号など）は、まとめる元の名前が消えないよう、メモに残す
+    // （空白や全角・半角の違いだけは入力の揺れとみなし、同じ名前として残さない）
+    if (compareKey(fromNow.name) !== compareKey(toNow.name)) keptNotes.unshift(`旧名（まとめた顧客）：${String(fromNow.name || "").trim()}`);
     MERGE_FIELDS.forEach(({ key }) => {
       if (!String(toNow[key] || "").trim() && String(fromNow[key] || "").trim()) toNow[key] = fromNow[key];
     });
     // メモは、まとめた先のメモはそのまま残し、まとめる元から足す部分のうち、まだ入っていないものだけを「 / 」でつなぐ
-    // （何度まとめても同じ内容が重ならないように）
+    // （何度まとめても同じ内容が重ならないように）。
+    // ・まとめる元のメモは「 / 」で区切り、区切った1つずつが、まとめた先のメモの区切りと同じなら足さない
+    //   （「1/15配達」のようなメモの中の「/」では区切らない）
+    // ・書き写す値（keptNotes）は区切らず、まとめた先のメモの中に、区切りから区切りまでまるごと同じ文があれば足さない
+    //   （住所などに「 / 」が入っていても分かれないように。「東京都1-2」が「東京都1-2-3」の一部というだけで捨てないように）
     const toMemo = String(toNow.memo || "").trim();
-    const existing = new Set(toMemo.split("/").map(m => m.trim()));
-    const added = [fromNow.memo, ...keptNotes].flatMap(m => String(m || "").split(" / ")).map(m => m.trim()).filter(m => m && !existing.has(m));
-    toNow.memo = [toMemo, ...new Set(added)].filter(Boolean).join(" / ");
+    const existing = new Set(toMemo.split(" / ").map(m => m.trim()));
+    const fromMemoParts = String(fromNow.memo || "").split(" / ").map(m => m.trim()).filter(m => m && !existing.has(m));
+    const newNotes = keptNotes.map(m => m.trim()).filter(m => m && !` / ${toMemo} / `.includes(` / ${m} / `));
+    // まとめる元のメモの中のくり返しや、メモと書き写す値の重なりは1つにする
+    const added = [...new Set([...fromMemoParts, ...newNotes])];
+    toNow.memo = [toMemo, ...added].filter(Boolean).join(" / ");
     customers = customers.filter(x => x.customerId !== fromId);
     saveIdLinkedData();
     // 予約・出荷の入力欄でまとめる元の顧客を選んでいたら、まとめた先の顧客に選び直す（選択が黙って外れないように）
@@ -2851,14 +3017,27 @@ document.getElementById("customerSelect").onchange = e => {
 };
 document.getElementById("shipmentCustomerSelect").onchange = e => {
   document.getElementById("shipmentName").value = customers.find(c => c.customerId === e.target.value)?.name || "";
-  refreshShipmentReservationOptions();
+  // 前に選んでいた予約が、選び直した顧客の予約なら、選んだままにする。
+  // 出荷の編集中は、元の出荷が紐づいていた予約も候補にする（顧客を A→B→A と戻したときに、元の予約が選ばれるように）
+  const current = document.getElementById("shipmentReservation").value;
+  const original = editingShipmentId === null ? null : shipments.find(x => x.id === editingShipmentId);
+  const owns = id => {
+    const r = id ? reservations.find(x => x.id === id) : null;
+    return !!r && customerFor(r)?.customerId === e.target.value;
+  };
+  refreshShipmentReservationOptions(owns(current) ? current : owns(original?.reservationId) ? original.reservationId : "");
 };
 document.getElementById("name").oninput = () => detachCustomerIfRenamed("customerSelect", "name");
 document.getElementById("shipmentName").oninput = () => {
   if (detachCustomerIfRenamed("shipmentCustomerSelect", "shipmentName")) refreshShipmentReservationOptions();
 };
 // 名前欄の入力を終えたとき（欄を離れたとき）に、登録済みの顧客と同じ名前ならその顧客を選ぶ
-document.getElementById("name").onchange = () => selectCustomerByTypedName("customerSelect", "name");
+// （出荷が紐づいた予約の編集中は顧客を変えられないので、自動で選ばない。選ぶと、変えていないのに「顧客は変更できません」で止まるため。
+//   ただし顧客の登録が見つからない予約は選び直せるので、自動で選ぶ）
+document.getElementById("name").onchange = () => {
+  if (linkedShipmentCount(editingReservationId) && !reservationCustomerMissing(editingReservationId)) return;
+  selectCustomerByTypedName("customerSelect", "name");
+};
 document.getElementById("shipmentName").onchange = () => {
   if (selectCustomerByTypedName("shipmentCustomerSelect", "shipmentName")) refreshShipmentReservationOptions();
 };

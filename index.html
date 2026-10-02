@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=25">
+    <link rel="stylesheet" href="style.css?v=26">
   </head>
   <body>
     <div class="container">
@@ -412,27 +412,6 @@
           <input type="file" id="importFile" accept=".json,application/json" hidden onchange="importBackup(event)">
         </div>
         <p class="backup-note">書き出したファイルには顧客の名前・電話番号・住所が含まれます。GitHubなどインターネット上に公開しないでください。</p>
-        <div class="sheet-sync">
-          <h3>スプレッドシートと合わせる</h3>
-          <p id="sheetStatus" class="backup-status sheet-status"></p>
-          <div class="backup-actions">
-            <button type="button" id="sheetSaveButton" onclick="saveToSheet()">全データを保存</button>
-            <!-- Supabase に切り替えたため、スプレッドシートの内容で Supabase のデータを上書きしないよう、画面からは隠している（機能は残している） -->
-            <button type="button" id="sheetLoadButton" class="cancel-button" onclick="loadFromSheet()" hidden>全データを読み込み</button>
-          </div>
-          <details class="sheet-settings" id="sheetSettings">
-            <summary>保存先の設定</summary>
-            <label for="sheetUrl">保存先の URL（ウェブアプリの URL）</label>
-            <input type="url" id="sheetUrl" placeholder="https://script.google.com/macros/s/……/exec" autocomplete="off" spellcheck="false">
-            <label for="sheetToken">合言葉</label>
-            <input type="password" id="sheetToken" autocomplete="off" spellcheck="false">
-            <div class="backup-actions">
-              <button type="button" id="sheetSettingsSave" onclick="saveSheetSettings()">設定を保存</button>
-              <button type="button" id="sheetSettingsClear" class="cancel-button" onclick="clearSheetSettings()">設定を消す</button>
-            </div>
-            <p class="backup-note">合言葉はこの端末のブラウザに保存されます。家族などと共用しているパソコンでは設定しないでください。ブラウザに「パスワードを保存しますか」と聞かれたら保存せず、「安全なパスワードを自動生成」などの候補も選ばないでください（スプレッドシート側と違う合言葉になります）。</p>
-          </details>
-        </div>
       </section>
     </div>
     <div id="docPrint" class="doc-print"></div>
@@ -460,6 +439,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js" integrity="sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok" crossorigin="anonymous"></script>
     <script src="supabase-config.js"></script>
     <script src="supabase-client.js?v=25"></script>
-    <script src="app.js?v=25"></script>
+    <script src="app.js?v=26"></script>
   </body>
 </html>

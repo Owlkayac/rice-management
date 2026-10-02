@@ -319,6 +319,136 @@ tbody tr:hover {
   align-content: start;
 }
 
+/* 顧客を探す入力欄と、その下に出る候補の一覧 */
+.customer-picker {
+  position: relative;
+}
+
+.customer-picker input {
+  width: 100%;
+  padding-right: 52px;
+  /* 上に固定されたタブの帯に隠れないよう、スクロールで止まる位置を下げる */
+  scroll-margin-top: 90px;
+}
+
+/* 顧客を変えられないあいだ（出荷が紐づいた予約の編集中）は、灰色にして変えられないことを見せる */
+.customer-picker input[readonly] {
+  background: #f2f2f2;
+  color: #555;
+}
+
+/* 顧客の欄を空にするボタン（欄の右はし） */
+.customer-clear {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 4px;
+  margin: auto 0;
+  /* 入力欄より手前に出す（入力欄の下に隠れて押せなくならないように） */
+  z-index: 2;
+  min-height: 44px;
+  height: 44px;
+  width: 44px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+}
+
+.customer-clear:hover {
+  background: #eee;
+}
+
+.customer-clear[hidden] {
+  display: none;
+}
+
+/* 画面には出さず、読み上げソフトにだけ伝える文 */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.customer-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  /* スマホでキーボードが出ても隠れにくいよう、画面の高さに合わせて低くする */
+  max-height: min(320px, 40vh);
+  /* dvh：キーボードなどで変わる、実際に見えている高さ（使えないブラウザでは、上の行が使われる） */
+  max-height: min(320px, 40dvh);
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #b9c4b9;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+}
+
+.customer-suggest[hidden] {
+  display: none;
+}
+
+.suggest-option {
+  display: grid;
+  gap: 2px;
+  min-height: 44px;
+  padding: 8px 12px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.suggest-option:hover,
+.suggest-option.active {
+  background: var(--green-50);
+}
+
+.suggest-main {
+  font-size: 16px;
+}
+
+.suggest-sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.suggest-head {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.suggest-new .suggest-main {
+  color: var(--green-900);
+  font-weight: bold;
+}
+
+.customer-picked {
+  margin: 0;
+  font-size: 14px;
+  color: var(--green-900);
+  overflow-wrap: anywhere;
+}
+
+.customer-picked.customer-picked-new {
+  color: #8a5a00;
+}
+
+.customer-picked[hidden] {
+  display: none;
+}
+
 .action-cell {
   white-space: nowrap;
 }

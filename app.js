@@ -495,17 +495,17 @@ function customerNameMismatch(customerId, name) {
   const c = findCustomer(customerId);
   if (!c) return "選んでいる顧客が見つかりません。顧客を選び直してください";
   if (String(name || "").trim() === String(c.name || "").trim()) return "";
-  return `選んでいる顧客「${c.name}」と名前欄「${name}」が違います。別の人なら顧客の選択を外してください`;
+  return `選んでいる顧客「${c.name}」と名前欄「${name}」が違います。別の人なら、顧客の欄の文字を消して入れ直してください`;
 }
 
-// 顧客を選んだまま名前欄に別の名前を入力したら、顧客の選択を外して知らせる。外したら true を返す
+// 顧客を選んだまま顧客の欄に別の文字を入力したら（別の人を探し直したら）、顧客の選択を外す。外したら true を返す
+// （外れたことは、欄の下の「選んでいる顧客」の表示が変わることで分かるので、お知らせは出さない）
 function detachCustomerIfRenamed(selectId, nameId) {
   const select = document.getElementById(selectId);
   const c = findCustomer(select.value);
   const typed = document.getElementById(nameId).value.trim();
   if (!c || typed === String(c.name || "").trim()) return false;
   select.value = "";
-  notify(`名前欄が「${c.name}」と違うため、顧客の選択を外しました`, "info");
   return true;
 }
 
@@ -565,6 +565,7 @@ function selectCustomerByTypedName(selectId, nameId) {
   select.value = found[0].customerId;
   document.getElementById(nameId).value = found[0].name;
   notify(`顧客管理の「${found[0].name}」を選びました`, "info");
+  showAllPickedCustomers();
   return true;
 }
 
@@ -592,6 +593,11 @@ function linkOrCreateCustomer(item) {
 // 空白や全角・半角の違いだけで名前が同じになる顧客がいれば（入力の揺れで別人として登録されないように）確かめる
 function confirmNewCustomerThen(item, action) {
   const name = String(item.name || "").trim();
+  // 電話番号で探して見つからなかったまま保存すると、電話番号を名前にした顧客ができてしまうので止める
+  if (!item.customerId && isPhoneQuery(name)) {
+    notify("この電話番号の顧客は見つかりませんでした。顧客の欄に名前を入れて候補から選ぶか、初めての人なら名前を入れて保存してください", "warn", 10000);
+    return;
+  }
   if (!item.customerId && customersNamed(name).length > 1) {
     notify(`「${name}」という名前の顧客が複数登録されています。顧客の欄でどの人かを選んでください`, "warn", 8000);
     return;
@@ -682,6 +688,292 @@ function refreshCustomerSelects() {
       nameInput.value = c.name;
     } else if (old) {
       nameInput.value = "";
+    }
+  });
+  showAllPickedCustomers();
+}
+
+// ---------- 顧客を探す入力欄（予約・出荷の顧客の欄） ----------
+
+// 候補に出す最大の人数（多すぎると探しにくいので、もっと文字を入れてもらう）
+const CUSTOMER_SUGGEST_LIMIT = 30;
+// 欄をクリックしただけのときに出す、最近の顧客の人数
+const RECENT_CUSTOMER_LIMIT = 10;
+
+// 探すための形：全角・半角と空白の違いをなくし、カタカナはひらがなに、英字は小文字にそろえる
+// （「ヤマダ」「やまだ」「ﾔﾏﾀﾞ」を同じとみなす）
+function searchKey(t) {
+  return compareKey(t).replace(/[ァ-ヶ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60)).toLowerCase();
+}
+
+function digitsOnly(t) {
+  return String(t || "").normalize("NFKC").replace(/\D/g, "");
+}
+
+// 電話番号で探しているか（数字と、ハイフンに似た記号・かっこ・空白・「+」だけで、数字が3けた以上）
+function isPhoneQuery(query) {
+  const t = String(query || "").normalize("NFKC");
+  return /^[\d\s()+\-‐‑‒–—―−ーｰ]+$/.test(t) && digitsOnly(t).length >= 3;
+}
+
+// 番号（「reservation-1700000000000-abc」など）から、登録した時刻を取り出す（取り出せなければ 0）
+function idTime(id) {
+  const m = /-(\d{13})-/.exec(String(id || ""));
+  return m ? Number(m[1]) : 0;
+}
+
+// 最近予約・出荷をした顧客（予約・出荷を登録した時刻の新しい順。直した時刻は数えない。
+// 番号の無かった古いデータは、番号を付けた時刻で数えるので、実際より新しく見えることがある）
+function recentCustomers(limit) {
+  const items = [...reservations, ...shipments]
+    .map(x => ({ time: idTime(x.id), customer: customerFor(x) }))
+    .filter(x => x.customer)
+    .sort((a, b) => b.time - a.time);
+  const seen = new Set();
+  const list = [];
+  for (const { customer } of items) {
+    if (seen.has(customer.customerId)) continue;
+    seen.add(customer.customerId);
+    list.push(customer);
+    if (list.length >= limit) break;
+  }
+  return list;
+}
+
+// 入れた文字に合う顧客。名前・ふりがなの一部、または電話番号の一部で探す。
+// 名前やふりがなが、入れた文字で始まる人を先に、あとは ふりがな（無ければ名前）の順に並べる
+function matchCustomers(query) {
+  const q = searchKey(query);
+  const qDigits = isPhoneQuery(query) ? digitsOnly(query) : "";
+  const scored = [];
+  customers.forEach(c => {
+    const name = searchKey(c.name);
+    const kana = searchKey(c.furigana);
+    let rank = -1;
+    if (name.startsWith(q) || kana.startsWith(q)) rank = 0;
+    else if (name.includes(q) || kana.includes(q)) rank = 1;
+    else if (qDigits && digitsOnly(c.phone).includes(qDigits)) rank = 2;
+    if (rank >= 0) scored.push({ c, rank });
+  });
+  const sortKey = c => String(c.furigana || c.name || "");
+  scored.sort((a, b) => a.rank - b.rank || sortKey(a.c).localeCompare(sortKey(b.c), "ja"));
+  return scored.map(x => x.c);
+}
+
+// 入力欄と、選んだ顧客の番号を持つ欄（hidden の select）、候補の一覧、「選んでいる顧客」の表示、読み上げ用の欄、消すボタンの組
+const CUSTOMER_PICKERS = [
+  { input: "name", select: "customerSelect", list: "nameSuggest", picked: "namePicked", status: "nameSuggestStatus", clear: "nameClear" },
+  { input: "shipmentName", select: "shipmentCustomerSelect", list: "shipmentNameSuggest", picked: "shipmentNamePicked", status: "shipmentNameSuggestStatus", clear: "shipmentNameClear" }
+];
+
+// 出荷が紐づいた予約を編集している間は、顧客を変えられない（候補も出さない）
+function customerPickerLocked(p) {
+  return p.input === "name" && linkedShipmentCount(editingReservationId) > 0 && !reservationCustomerMissing(editingReservationId);
+}
+
+// 入力欄の下に、「どの顧客を選んでいるか」と、選んでいないときに保存するとどうなるかを出す
+function showPickedCustomer(p) {
+  const el = document.getElementById(p.picked);
+  if (!el) return;
+  const id = document.getElementById(p.select).value;
+  const typed = document.getElementById(p.input).value.trim();
+  const c = findCustomer(id);
+  let text = "";
+  let isNew = false;
+  if (c) {
+    text = `✓ 顧客管理の「${customerDisplayNames().get(c.customerId).label}」を選んでいます`;
+  } else if (typed) {
+    isNew = true;
+    const same = customersNamed(typed);
+    if (isPhoneQuery(typed)) text = "この電話番号の顧客は、まだ選んでいません。候補から選んでください（見つからないときは、名前を入れてください）";
+    else if (same.length > 1) text = `「${typed}」という名前の顧客が複数います。候補からどの人かを選んでください`;
+    else if (same.length && declinedSameNames.has(typed)) text = "登録済みの顧客とは別の人として入力されています。先に「顧客管理」でその人を登録してから、候補から選んでください";
+    else if (same.length) text = `候補から選んでいません。保存のときに、顧客管理の「${typed}」につなぐかを確かめます`;
+    else text = "顧客管理にない名前です。このまま保存すると、新しい顧客として顧客管理にも登録します";
+  }
+  el.textContent = text;
+  el.classList.toggle("customer-picked-new", isNew);
+  el.hidden = !text;
+  const locked = customerPickerLocked(p);
+  const clear = document.getElementById(p.clear);
+  if (clear) clear.hidden = !typed || locked;
+  // 顧客を変えられない編集のあいだは、欄を書きかえられないようにし、開いていた候補の一覧も閉じる
+  // （打てると選択が外れ、候補も出ないので、選び直せなくなるため）
+  document.getElementById(p.input).readOnly = locked;
+  if (locked) closeCustomerSuggest(p);
+}
+
+function showAllPickedCustomers() {
+  CUSTOMER_PICKERS.forEach(showPickedCustomer);
+}
+
+function closeCustomerSuggest(p) {
+  const list = document.getElementById(p.list);
+  list.hidden = true;
+  list.innerHTML = "";
+  const input = document.getElementById(p.input);
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+  document.getElementById(p.status).textContent = "";
+}
+
+// 候補を選んだ：その顧客を選び、名前欄をその人の名前にする
+function pickCustomer(p, customerId) {
+  const c = findCustomer(customerId);
+  if (!c) return;
+  const select = document.getElementById(p.select);
+  select.value = c.customerId;
+  document.getElementById(p.input).value = c.name;
+  declinedSameNames.delete(String(c.name || "").trim());
+  // 出荷では「対象の予約」をこの顧客の予約にする（今までの「顧客を選んだとき」と同じ処理）
+  if (select.onchange) select.onchange({ target: select });
+  closeCustomerSuggest(p);
+  showPickedCustomer(p);
+  document.getElementById(p.status).textContent = `「${c.name}」を選びました`;
+}
+
+// 顧客の欄を空にする（選んでいた顧客も外す）
+function clearCustomerPicker(p) {
+  const select = document.getElementById(p.select);
+  const input = document.getElementById(p.input);
+  // 消す前に入れていた名前について、「別の人」と答えた記録が残らないようにする
+  declinedSameNames.delete(input.value.trim());
+  select.value = "";
+  // 今までの「顧客を選び直したとき」の処理で、名前欄を空にし、出荷では「対象の予約」も作り直す
+  if (select.onchange) select.onchange({ target: select });
+  input.value = "";
+  showPickedCustomer(p);
+  input.focus();
+}
+
+// 候補の下の行：ふりがなと電話番号の下4けた（お客さんの前で開くこともあるので、電話番号は全部は出さない）。
+// 同じ名前の人がいて、表示名にもう電話番号などが入っているときは、ふりがなだけにする（同じ情報を2回並べない）
+function suggestSubText(c, label) {
+  const phone = digitsOnly(c.phone);
+  const parts = [String(c.furigana || "").trim()];
+  if (label === c.name && phone.length >= 4) parts.push(`電話…${phone.slice(-4)}`);
+  return parts.filter(Boolean).join("・");
+}
+
+function addSuggestOption(p, list, main, sub, onPick) {
+  const li = document.createElement("li");
+  li.id = `${p.list}-${list.children.length}`;
+  li.className = "suggest-option";
+  li.setAttribute("role", "option");
+  li.setAttribute("aria-selected", "false");
+  const strong = document.createElement("span");
+  strong.className = "suggest-main";
+  strong.textContent = main;
+  li.appendChild(strong);
+  if (sub) {
+    const small = document.createElement("span");
+    small.className = "suggest-sub";
+    small.textContent = sub;
+    li.appendChild(small);
+  }
+  // 押したときに入力欄からフォーカスが外れないようにする（外れると、選ぶ前に一覧が閉じるため）
+  li.addEventListener("mousedown", e => e.preventDefault());
+  li.addEventListener("click", onPick);
+  list.appendChild(li);
+}
+
+// 見出し・お知らせの行（読み上げソフトには、別の欄（status）で伝えるので、ここは読ませない）
+function addSuggestNote(list, text) {
+  const li = document.createElement("li");
+  li.className = "suggest-head";
+  li.setAttribute("aria-hidden", "true");
+  li.textContent = text;
+  list.appendChild(li);
+}
+
+// 候補の一覧を作り直す。文字が空なら最近の顧客、文字があれば合う顧客を出す
+function renderCustomerSuggest(p) {
+  const input = document.getElementById(p.input);
+  const list = document.getElementById(p.list);
+  const status = document.getElementById(p.status);
+  if (customerPickerLocked(p)) {
+    closeCustomerSuggest(p);
+    return;
+  }
+  const query = input.value.trim();
+  const found = query ? matchCustomers(query) : recentCustomers(RECENT_CUSTOMER_LIMIT);
+  list.innerHTML = "";
+  const names = customerDisplayNames();
+  if (!query && found.length) addSuggestNote(list, "最近の顧客");
+  found.slice(0, CUSTOMER_SUGGEST_LIMIT).forEach(c => {
+    const label = names.get(c.customerId).label;
+    addSuggestOption(p, list, label, suggestSubText(c, label), () => pickCustomer(p, c.customerId));
+  });
+  const more = found.length - CUSTOMER_SUGGEST_LIMIT;
+  if (more > 0) addSuggestNote(list, `ほか${more}人（もっと文字を入れると、しぼれます）`);
+  if (query && !found.length) {
+    addSuggestNote(list, isPhoneQuery(query) ? "この電話番号の顧客はいません（名前を入れて探してください）" : "合う顧客がいません（このまま保存すると、新しい顧客として登録します）");
+  }
+  const hasItems = list.children.length > 0;
+  list.hidden = !hasItems;
+  input.setAttribute("aria-expanded", hasItems ? "true" : "false");
+  input.removeAttribute("aria-activedescendant");
+  // 読み上げソフト向けに、候補の数を知らせる
+  if (query) status.textContent = found.length ? `候補${Math.min(found.length, CUSTOMER_SUGGEST_LIMIT)}人${more > 0 ? `（ほか${more}人）` : ""}。上下の矢印キーで選べます` : "合う顧客がいません";
+  else status.textContent = found.length ? `最近の顧客${found.length}人。上下の矢印キーで選べます` : "";
+}
+
+// ↑↓ で候補を動かし、Enter で選び、Esc で閉じる（日本語の変換中は、何もしない）
+function moveCustomerSuggest(p, e) {
+  if (e.isComposing || e.keyCode === 229) return;
+  const list = document.getElementById(p.list);
+  const input = document.getElementById(p.input);
+  if (e.key === "ArrowDown" && list.hidden) {
+    renderCustomerSuggest(p);
+    e.preventDefault();
+    return;
+  }
+  if (list.hidden) return;
+  const options = [...list.querySelectorAll(".suggest-option")];
+  const current = options.findIndex(o => o.classList.contains("active"));
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!options.length) return;
+    const next = e.key === "ArrowDown" ? Math.min(current + 1, options.length - 1) : Math.max(current - 1, 0);
+    options.forEach((o, i) => {
+      o.classList.toggle("active", i === next);
+      o.setAttribute("aria-selected", i === next ? "true" : "false");
+    });
+    input.setAttribute("aria-activedescendant", options[next].id);
+    options[next].scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter" && current >= 0) {
+    e.preventDefault();
+    options[current].click();
+  } else if (e.key === "Escape") {
+    closeCustomerSuggest(p);
+  }
+}
+
+function setupCustomerPickers() {
+  CUSTOMER_PICKERS.forEach(p => {
+    const input = document.getElementById(p.input);
+    input.addEventListener("focus", () => {
+      renderCustomerSuggest(p);
+      // スマホでは、キーボードで候補が隠れないよう、欄を画面の上のほうへ動かす
+      if (window.matchMedia("(max-width: 700px)").matches) {
+        setTimeout(() => input.scrollIntoView({ block: "start", behavior: "smooth" }), 300);
+      }
+    });
+    input.addEventListener("input", () => {
+      renderCustomerSuggest(p);
+      showPickedCustomer(p);
+    });
+    // 入力欄にいるまま、もう一度押したとき（Esc で閉じたあとなど）も、候補を出す
+    input.addEventListener("click", () => {
+      if (document.getElementById(p.list).hidden) renderCustomerSuggest(p);
+    });
+    input.addEventListener("keydown", e => moveCustomerSuggest(p, e));
+    input.addEventListener("blur", () => closeCustomerSuggest(p));
+    const clear = document.getElementById(p.clear);
+    if (clear) {
+      // 押したときに入力欄からフォーカスが外れないようにする（外れると、名前欄を離れたときの確認が出てしまうため）
+      clear.addEventListener("mousedown", e => e.preventDefault());
+      clear.addEventListener("click", () => clearCustomerPicker(p));
     }
   });
 }
@@ -795,7 +1087,7 @@ function customerRestoreHint() {
   const before = editStartCustomer.id;
   const now = document.getElementById("customerSelect").value;
   const label = id => findCustomer(id)?.name || editStartCustomer.name;
-  if (!before && now) return `変えるつもりがなければ、顧客の選択を外して（未選択に戻して）、名前欄を「${editStartCustomer.name}」にしてください。`;
+  if (!before && now) return `変えるつもりがなければ、顧客の欄の「×」で文字を消してから、「${editStartCustomer.name}」と入れ直してください（候補からは選ばないでください）。`;
   if (before && !now) return `顧客の選択が外れています。変えるつもりがなければ、顧客を「${label(before)}」に選び直してください。`;
   if (before) return `（顧客：${label(before)} → ${label(now)}）変えるつもりがなければ、顧客を「${label(before)}」に選び直してください。`;
   return `（名前：${editStartCustomer.name} → ${document.getElementById("name").value.trim()}）変えるつもりがなければ、名前欄を「${editStartCustomer.name}」に戻してください。`;
@@ -860,6 +1152,7 @@ function editReservation(i) {
   document.getElementById("name").value = customer ? customer.name : r.name || "";
   editStartCustomer = { id: document.getElementById("customerSelect").value, name: document.getElementById("name").value.trim() };
   updateCustomerLockNote();
+  showAllPickedCustomers();
   document.getElementById("submitButton").textContent = "変更を保存";
   document.getElementById("cancelEditButton").hidden = false;
 }
@@ -909,6 +1202,7 @@ function clearReservation() {
   document.getElementById("name").value = "";
   document.getElementById("kg").value = "";
   document.getElementById("customerSelect").value = "";
+  showAllPickedCustomers();
   // 品種が無い古い予約を編集した後は品種欄が空になっているので、先頭の品種に戻す
   if (!varieties.includes(variety.value)) variety.value = varieties[0];
   // 月が無い古い予約を編集した後は月の欄が空になっているので、先頭の月に戻す
@@ -1311,6 +1605,7 @@ function editShipment(i) {
   shipmentCustomerSelect.value = customer ? customer.customerId : "";
   // 顧客が選ばれるときは名前欄を今の顧客名にそろえる（顧客名を後から変えていても保存で止まらないように）
   shipmentName.value = customer ? customer.name : s.name || "";
+  showAllPickedCustomers();
   refreshShipmentReservationOptions(s.reservationId);
   // 顧客の登録が見つからないなどで、紐づいていた予約を「対象の予約」に選べないときは、先に知らせる
   if (s.reservationId && document.getElementById("shipmentReservation").value !== s.reservationId) {
@@ -1340,6 +1635,7 @@ function clearShipmentForm(keepCustomerId = "") {
   const customer = findCustomer(keepCustomerId);
   shipmentCustomerSelect.value = customer ? customer.customerId : "";
   shipmentName.value = customer ? customer.name : "";
+  showAllPickedCustomers();
   refreshShipmentReservationOptions();
 }
 
@@ -3042,6 +3338,7 @@ document.getElementById("shipmentName").onchange = () => {
   if (selectCustomerByTypedName("shipmentCustomerSelect", "shipmentName")) refreshShipmentReservationOptions();
 };
 document.getElementById("shipmentReservation").onchange = syncShipmentVarietyWithReservation;
+setupCustomerPickers();
 document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView(e.dataset.view));
 OLD_SHEET_KEYS.forEach(k => {
   try {

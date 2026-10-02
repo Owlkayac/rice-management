@@ -51,11 +51,13 @@ create table public.shipments (
   created_at timestamptz not null default now()
 );
 
--- ⑤ 品種ごとの在庫と単価（A〜F の1品種につき1行）
+-- ⑤ 品種ごとの在庫・単価・歩留まり（A〜F の1品種につき1行）
 create table public.variety_settings (
   variety text primary key,                -- 品種（A〜F）
-  stock_kg numeric not null default 0,     -- 在庫（kg）
-  price numeric not null default 0         -- 1kg あたりの単価（円）
+  stock_kg numeric not null default 0,     -- 在庫（kg・精米する前の量）
+  price numeric not null default 0,        -- 1kg あたりの単価（円）
+  yield_percent numeric not null default 90, -- 歩留まり（%）。出荷できる量 ＝ 在庫 × 歩留まり
+  constraint variety_settings_yield check (yield_percent >= 50 and yield_percent <= 100)
 );
 
 -- 品種 A〜F の行を、在庫0・単価0で先に作っておく

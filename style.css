@@ -211,9 +211,13 @@ table {
   min-width: 650px;
 }
 
-.dashboard-table,
-.inventory-table {
+.dashboard-table {
   min-width: 980px;
+}
+
+/* 在庫管理の表は、歩留まり・出荷できる量の列があるので広めにする */
+.inventory-table {
+  min-width: 1100px;
 }
 
 th,
@@ -267,6 +271,18 @@ tbody tr:hover {
 .total-card strong {
   color: #1e5d2b;
   font-size: 28px;
+}
+
+/* ダッシュボードの総在庫量の下に添える「出荷できる量（精米後）」 */
+.card-sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+/* 歩留まりの説明（Supabase の準備がまだのときの注意を、改行して出す） */
+#yieldHelp {
+  white-space: pre-line;
 }
 
 /* 予約より多く出荷しているときの補足（未出荷量をマイナスで出す代わりに添える） */
@@ -975,6 +991,21 @@ small {
     display: none;
   }
 
+  /* 在庫管理の表は、スマホでは1品種を1枚のカードにする。品種名（th）はカードの見出しにする */
+  .inventory-table.card-table tbody th {
+    display: block;
+    flex: 0 0 100%;
+    padding: 8px 0;
+    border: 0;
+    border-bottom: 1px solid #eef2ee;
+    font-size: 17px;
+    text-align: left;
+  }
+
+  .inventory-table.card-table td input {
+    width: 120px;
+  }
+
   .card-table tbody tr,
   .card-table tbody tr:hover {
     display: flex;
@@ -1230,7 +1261,9 @@ small {
     font-size: 20px;
   }
 
-  table {
+  table,
+  .dashboard-table,
+  .inventory-table {
     min-width: 0;
     font-size: 12px;
   }

@@ -38,6 +38,12 @@ const CHANNELS = ["ウェブフォーム", "Instagram", "LINE", "電話・対面
 const STATUSES = { received: "受付済み", preparing: "出荷準備中", shipped: "出荷済み" };
 const STATUS_KEYS = ["received", "preparing", "shipped"];
 const PRICES_STORAGE_KEY = "varietyPrices";
+// 品種ごとの歩留まり率（%）。在庫量は精米する前の量なので、精米で減る分（米粉になる分など）を引いて「出荷できる量」を出す
+const YIELDS_STORAGE_KEY = "varietyYields";
+const DEFAULT_YIELD_PERCENT = 90;
+// 歩留まり率として受け付ける範囲（データベースの決まり supabase-yield.sql と同じ）
+const YIELD_MIN_PERCENT = 50;
+const YIELD_MAX_PERCENT = 100;
 const STOCK_MODE_KEY = "stockMode";
 const STOCK_MODES = {
   shipped: {
@@ -51,13 +57,16 @@ const STOCK_MODES = {
 };
 const varieties = ["A", "B", "C", "D", "E", "F"];
 const months = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
-const STORAGE_KEYS = ["reservations", SHIPMENTS_STORAGE_KEY, CUSTOMERS_STORAGE_KEY, INVENTORY_STORAGE_KEY, PRICES_STORAGE_KEY];
+const STORAGE_KEYS = ["reservations", SHIPMENTS_STORAGE_KEY, CUSTOMERS_STORAGE_KEY, INVENTORY_STORAGE_KEY, PRICES_STORAGE_KEY, YIELDS_STORAGE_KEY];
 // 予約・出荷・顧客・在庫・単価（STORAGE_KEYS）は、ブラウザ（localStorage）ではなく Supabase に保存する。
 // 画面を開いている間は、保存した内容をここに JSON の文字で持っておき、変わった行だけを Supabase へ送る。
 // （並べ替えの選び方など、それ以外の設定は今までどおり localStorage に保存する）
 const cloudStore = {};
 // Supabase から読み込み終わったら true（読み込みが終わるまでは、データを変える操作をさせない）
 let cloudReady = false;
+// Supabase の variety_settings に歩留まりの列（yield_percent）があれば true（supabase-yield.sql を実行済み）。
+// 列が無いのに送ると、在庫・単価の保存まで失敗し続けるので、無い間は歩留まりを送らない（90%で計算する）
+let cloudYieldColumn = false;
 // Supabase へ送っている途中なら true
 let cloudSaving = false;
 // まだ送っていない変更があれば true
@@ -89,6 +98,7 @@ let shipments = read(SHIPMENTS_STORAGE_KEY, []);
 let customers = read(CUSTOMERS_STORAGE_KEY, []);
 let inventory = loadInventory();
 let prices = loadPrices();
+let yields = loadYields();
 let stockMode = loadStockMode();
 // 編集中の予約・出荷は、配列の番号ではなく id で覚える（削除で番号がずれても別のデータを上書きしないため）
 let editingReservationId = null;
@@ -411,12 +421,14 @@ function displayVarietyMismatches() {
   box.appendChild(ul);
 }
 
+// 予約は精米したあとの量なので、在庫量そのものではなく「出荷できる量」（在庫量×歩留まり率）とくらべる
 function stockWarning(r, ignoreId) {
   const stock = Number(inventory[r.variety]) || 0;
-  const already = reservations.reduce((a, x) => a + (x.id !== ignoreId && x.variety === r.variety ? Number(x.kg) || 0 : 0), 0);
-  const total = already + r.kg;
-  if (total <= stock) return "";
-  let text = `${r.variety}の予約が在庫を${formatKg(total - stock)}超えます。\n\n在庫：${formatKg(stock)}\nこれまでの予約：${formatKg(already)}\n今回の予約：${formatKg(r.kg)}\n予約の合計：${formatKg(total)}\n\nこのまま登録しますか？`;
+  const shippable = shippableKg(r.variety);
+  const already = roundKg(reservations.reduce((a, x) => a + (x.id !== ignoreId && x.variety === r.variety ? Number(x.kg) || 0 : 0), 0));
+  const total = roundKg(already + r.kg);
+  if (total <= shippable) return "";
+  let text = `${r.variety}の予約が出荷できる量を${formatKg(total - shippable)}超えます。\n\n在庫（精米前）：${formatKg(stock)}\n歩留まり：${yields[r.variety]}%\n出荷できる量：${formatKg(shippable)}\nこれまでの予約：${formatKg(already)}\n今回の予約：${formatKg(r.kg)}\n予約の合計：${formatKg(total)}\n\nこのまま登録しますか？`;
   if (stock === 0) text += "\n（在庫が未入力の場合は、先に「在庫管理」で入力してください）";
   return text;
 }
@@ -462,6 +474,27 @@ function loadPricesFrom(x) {
 
 function loadPrices() {
   return loadPricesFrom(read(PRICES_STORAGE_KEY, {}));
+}
+
+function validYield(x) {
+  const n = Number(x);
+  return x !== null && x !== "" && Number.isFinite(n) && n >= YIELD_MIN_PERCENT && n <= YIELD_MAX_PERCENT;
+}
+
+// 歩留まり率が入っていない（または範囲の外の）品種は、初めの値（90%）にする
+function loadYieldsFrom(x) {
+  const r = {};
+  varieties.forEach(v => r[v] = validYield(x?.[v]) ? Number(x[v]) : DEFAULT_YIELD_PERCENT);
+  return r;
+}
+
+function loadYields() {
+  return loadYieldsFrom(read(YIELDS_STORAGE_KEY, {}));
+}
+
+// 出荷できる量（精米したあとの量）＝ 在庫量（精米する前の量）× 歩留まり率
+function shippableKg(v) {
+  return roundKg((Number(inventory[v]) || 0) * (Number(yields[v]) || 0) / 100);
 }
 
 function loadStockMode() {
@@ -1402,6 +1435,7 @@ function displayDashboard() {
   document.getElementById("dashboardReservationCustomerCount").textContent = `${rc.size}人`;
   document.getElementById("dashboardShipmentCustomerCount").textContent = `${sc.size}人`;
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
+  document.getElementById("dashboardShippable").textContent = `出荷できる量（精米後）：${formatKg(varieties.reduce((a, v) => a + shippableKg(v), 0))}`;
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
   // 未出荷量は品種ごとの残りの合計（出荷集計の「未出荷」列の合計と同じ）
   const unshipped = unshippedByVariety(reservations, shipments);
@@ -1438,15 +1472,17 @@ function displayInventory() {
   document.getElementById("stockRemainHeader").innerHTML = `残り在庫<br><small>${info.basis}</small>`;
   document.getElementById("stockModeHelp").textContent = `${info.help}残りが${LOW_STOCK_THRESHOLD}kg未満で「在庫少」、0kg未満で「在庫不足」と表示します。`;
   document.getElementById("priceHelp").textContent = "納品書・請求書に使う、品種ごとの単価（1kgあたりの金額）です。0円のままでも記録できます。";
+  document.getElementById("yieldHelp").textContent = `在庫量は精米する前の量を入れてください。精米で減る分（米粉になる分など）を引くため、在庫量に歩留まり（${YIELD_MIN_PERCENT}〜${YIELD_MAX_PERCENT}%）をかけた「出荷できる量」から、予約・出荷の量を引いて残りを出します。` + (cloudYieldColumn ? "" : "\n※ 歩留まりを変えるには、先に Supabase で supabase-yield.sql を実行してください（それまでは、どの品種も90%で計算します）。");
   const body = document.getElementById("inventoryList");
   body.innerHTML = "";
   varieties.forEach(v => {
-    const remain = inventory[v] - (used[v] || 0);
+    const shippable = shippableKg(v);
+    const remain = roundKg(shippable - (used[v] || 0));
     const tr = document.createElement("tr");
     tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
-    tr.innerHTML = `<th>${v}</th><td data-label="在庫量"><input type="number" min="0" value="${inventory[v]}" aria-label="${v}の在庫量(kg)"></td><td data-label="予約量">${formatKg(reserved[v])}</td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input" aria-label="${v}の単価(円/kg)"></td><td data-label="残り在庫">${formatKg(remain)}</td><td>${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
+    tr.innerHTML = `<th>${v}</th><td data-label="在庫量(精米前)"><input type="number" min="0" value="${inventory[v]}" class="stock-input" aria-label="${v}の在庫量(kg・精米前)"></td><td data-label="歩留まり(%)"><input type="number" min="${YIELD_MIN_PERCENT}" max="${YIELD_MAX_PERCENT}" step="0.1" inputmode="decimal" value="${yields[v]}" class="yield-input" aria-label="${v}の歩留まり(%)"${cloudYieldColumn ? "" : " disabled"}></td><td data-label="出荷できる量">${formatKg(shippable)}</td><td data-label="予約量">${formatKg(reserved[v])}</td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input" aria-label="${v}の単価(円/kg)"></td><td data-label="残り在庫(${info.basis})">${formatKg(remain)}</td><td data-label="状態">${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
     // 止めたときは、欄を保存してある値に戻す（入れた値のまま残ると、保存できたように見えるため）
-    tr.querySelector("input").onchange = e => {
+    tr.querySelector(".stock-input").onchange = e => {
       if (!ensureFresh()) {
         refreshAll();
         return;
@@ -1476,6 +1512,27 @@ function displayInventory() {
       save(PRICES_STORAGE_KEY, prices);
       refreshAll();
     };
+    tr.querySelector(".yield-input").onchange = e => {
+      if (!ensureFresh()) {
+        refreshAll();
+        return;
+      }
+      // Supabase に歩留まりの列がまだ無いときは保存できない（送ると、在庫・単価の保存まで止まってしまうため）
+      if (!cloudYieldColumn) {
+        notify("歩留まりを変えるには、先に Supabase で supabase-yield.sql を実行してください", "warn");
+        refreshAll();
+        return;
+      }
+      const value = Number(e.target.value);
+      if (!validYield(e.target.value)) {
+        notify(`歩留まりは${YIELD_MIN_PERCENT}〜${YIELD_MAX_PERCENT}%の数で入力してください`, "warn");
+        refreshAll();
+        return;
+      }
+      yields[v] = Math.round(value * 10) / 10;
+      save(YIELDS_STORAGE_KEY, yields);
+      refreshAll();
+    };
     body.appendChild(tr);
   });
   displayUnknownVarietyStock(body);
@@ -1489,7 +1546,7 @@ function displayUnknownVarietyStock(body) {
   if (unknownReservations.length) {
     const tr = document.createElement("tr");
     tr.className = "stock-unknown";
-    tr.innerHTML = '<th>品種なし</th><td data-label="在庫量">—</td><td data-label="予約量"></td><td data-label="単価(円/kg)">—</td><td data-label="残り在庫">—</td><td><span class="badge badge-low">要確認</span></td>';
+    tr.innerHTML = '<th>品種なし</th><td data-label="在庫量(精米前)">—</td><td data-label="歩留まり(%)">—</td><td data-label="出荷できる量">—</td><td data-label="予約量"></td><td data-label="単価(円/kg)">—</td><td data-label="残り在庫">—</td><td data-label="状態"><span class="badge badge-low">要確認</span></td>';
     tr.querySelector('[data-label="予約量"]').textContent = formatKg(sumKg(unknownReservations));
     body.appendChild(tr);
   }
@@ -1722,14 +1779,14 @@ function displayShipments() {
   const r = getReservedTotals();
   const s = getShippedTotals();
   const body = document.getElementById("shipmentSummaryBody");
-  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${unshippedCellHtml(r[v], s[v])}</td></tr>`);
-  // 品種が入っていない（または不明な）予約・出荷も、表から消えないように「品種なし」の行にまとめる（在庫とは結びつけられないので在庫量は「—」）
+  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(shippableKg(v))}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${unshippedCellHtml(r[v], s[v])}</td></tr>`);
+  // 品種が入っていない（または不明な）予約・出荷も、表から消えないように「品種なし」の行にまとめる（在庫とは結びつけられないので在庫量・出荷できる量は「—」）
   const unknownReservations = unknownVarietyItems(reservations);
   const unknownShipments = unknownVarietyItems(shipments);
   if (unknownReservations.length || unknownShipments.length) {
     const unknownReserved = sumKg(unknownReservations);
     const unknownShipped = sumKg(unknownShipments);
-    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${unshippedCellHtml(unknownReserved, unknownShipped)}</td></tr>`);
+    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${unshippedCellHtml(unknownReserved, unknownShipped)}</td></tr>`);
   }
   body.innerHTML = rows.join("");
 }
@@ -2262,6 +2319,7 @@ function reloadFromStorage() {
   customers = read(CUSTOMERS_STORAGE_KEY, []);
   inventory = loadInventory();
   prices = loadPrices();
+  yields = loadYields();
   STORAGE_KEYS.forEach(k => lastSeen[k] = rawGet(k));
   reloadCount++;
   ensureAllIds();
@@ -2414,13 +2472,14 @@ const CLOUD_TABLES = [
   }
 ];
 
-// 在庫と単価は、品種ごとに1行（variety_settings テーブル）にまとめて保存する
+// 在庫・単価・歩留まりは、品種ごとに1行（variety_settings テーブル）にまとめて保存する
 const CLOUD_VARIETY_TABLE = "variety_settings";
 
 function varietySettingRows() {
   const stock = normalizeInventory(read(INVENTORY_STORAGE_KEY, {}));
   const price = loadPricesFrom(read(PRICES_STORAGE_KEY, {}));
-  return varieties.map(v => ({ variety: v, stock_kg: stock[v], price: price[v] }));
+  const yieldPercent = loadYieldsFrom(read(YIELDS_STORAGE_KEY, {}));
+  return varieties.map(v => cloudYieldColumn ? { variety: v, stock_kg: stock[v], price: price[v], yield_percent: yieldPercent[v] } : { variety: v, stock_kg: stock[v], price: price[v] });
 }
 
 // 最後に Supabase と合わせたときの行（テーブルごとに「行を見分ける値 → 行の JSON の文字」）。
@@ -2436,7 +2495,7 @@ let cloudReplaceAll = false;
 function currentCloudRows() {
   return [
     ...CLOUD_TABLES.map(t => ({ table: t.table, label: t.label, keyColumn: t.keyColumn, rows: t.toRows(read(t.key, [])) })),
-    { table: CLOUD_VARIETY_TABLE, label: "在庫・単価", keyColumn: "variety", rows: varietySettingRows() }
+    { table: CLOUD_VARIETY_TABLE, label: "在庫・単価・歩留まり", keyColumn: "variety", rows: varietySettingRows() }
   ];
 }
 
@@ -2757,12 +2816,16 @@ async function fetchCloudData() {
   const settings = results[CLOUD_TABLES.length].data.filter(row => varieties.includes(row.variety));
   const stock = {};
   const price = {};
+  const yieldPercent = {};
   settings.forEach(row => {
     stock[row.variety] = row.stock_kg;
     price[row.variety] = row.price;
+    yieldPercent[row.variety] = row.yield_percent;
   });
+  // 読んだ行に yield_percent の列があれば、supabase-yield.sql を実行済み（行が1つも無いときは分からないので、無いものとする）
+  const yieldColumn = settings.length > 0 && settings.every(row => Object.prototype.hasOwnProperty.call(row, "yield_percent"));
   versions[CLOUD_VARIETY_TABLE] = new Map(settings.map(row => [row.variety, row.updated_at]));
-  return { lists, stock: normalizeInventory(stock), price: loadPricesFrom(price), savedVarieties: new Set(settings.map(row => row.variety)), versions, skipped };
+  return { lists, stock: normalizeInventory(stock), price: loadPricesFrom(price), yields: loadYieldsFrom(yieldPercent), yieldColumn, savedVarieties: new Set(settings.map(row => row.variety)), versions, skipped };
 }
 
 // 読んだデータを cloudStore と控え（cloudBaseline）に入れる。今の画面のデータと違っていたら true を返す
@@ -2771,13 +2834,17 @@ function applyCloudData(d) {
   CLOUD_TABLES.forEach((t, i) => texts[t.key] = JSON.stringify(d.lists[i]));
   texts[INVENTORY_STORAGE_KEY] = JSON.stringify(d.stock);
   texts[PRICES_STORAGE_KEY] = JSON.stringify(d.price);
-  const changed = STORAGE_KEYS.some(k => cloudStore[k] !== texts[k]);
+  texts[YIELDS_STORAGE_KEY] = JSON.stringify(d.yields);
+  // 列があるか変わったときも、画面（歩留まりの欄が使えるか）を作り直す
+  const changed = STORAGE_KEYS.some(k => cloudStore[k] !== texts[k]) || cloudYieldColumn !== d.yieldColumn;
+  // 控え（cloudBaseline）を作る前に、歩留まりを送るかどうかを決める（控えと送る行の形をそろえるため）
+  cloudYieldColumn = d.yieldColumn;
   Object.assign(cloudStore, texts);
   CLOUD_TABLES.forEach((t, i) => {
     // 控えは、読み込んだデータをもう一度「行」にしたもので作る（読み込んだだけで送り直しにならないように）
     cloudBaseline[t.table] = new Map(t.toRows(d.lists[i]).map(row => [row[t.keyColumn], JSON.stringify(row)]));
   });
-  // 在庫・単価の控えは、Supabase に行があった品種だけ（無い品種は、次に保存するときに行を作る）
+  // 在庫・単価・歩留まりの控えは、Supabase に行があった品種だけ（無い品種は、次に保存するときに行を作る）
   cloudBaseline[CLOUD_VARIETY_TABLE] = new Map(varietySettingRows().filter(row => d.savedVarieties.has(row.variety)).map(row => [row.variety, JSON.stringify(row)]));
   Object.assign(cloudVersions, d.versions);
   // Supabase の内容に入れかえたので、まとめて置きかえる印も下ろす
@@ -3194,7 +3261,7 @@ function makeBackup() {
     app: BACKUP_APP_NAME,
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
-    data: { reservations, shipments, customers, inventory, prices }
+    data: { reservations, shipments, customers, inventory, prices, yields }
   };
 }
 
@@ -3278,7 +3345,11 @@ function validateBackup(obj) {
   if (tooBig(d.inventory) || tooBig(d.prices)) {
     return { error: "在庫か単価に、大きすぎる数が入っています" };
   }
-  return { data: { reservations: d.reservations, shipments: d.shipments, customers: d.customers, inventory: d.inventory, prices: d.prices || {} } };
+  // 歩留まりは、これを足す前に書き出したバックアップには無い（無いときは、今の歩留まりをそのまま使う）
+  if (d.yields !== undefined && !(isPlainObject(d.yields) && varieties.every(v => d.yields[v] === undefined || (typeof d.yields[v] === "number" && validYield(d.yields[v]))))) {
+    return { error: `歩留まりのデータが正しくありません（${YIELD_MIN_PERCENT}〜${YIELD_MAX_PERCENT}%の数にしてください）` };
+  }
+  return { data: { reservations: d.reservations, shipments: d.shipments, customers: d.customers, inventory: d.inventory, prices: d.prices || {}, yields: d.yields } };
 }
 
 // 同じ id のものが2件以上あれば true（id が無いものは、読み込んだあとに別々の id を付けるので数えない。
@@ -3297,12 +3368,16 @@ function hasDuplicateId(list, idOf) {
 
 // バックアップの内容に入れ替えて保存する。保存できたら true、できなければ元のデータのまま false を返す
 function applyBackup(d) {
-  const previous = { reservations, shipments, customers, inventory, prices };
+  const previous = { reservations, shipments, customers, inventory, prices, yields };
   reservations = d.reservations;
   shipments = d.shipments;
   customers = d.customers;
   inventory = normalizeInventory(d.inventory);
   prices = loadPricesFrom(d.prices);
+  // Supabase に歩留まりの列がまだ無いときは、歩留まりを保存できないので、読み込まずに90%のままにする。
+  // バックアップに歩留まりが無い品種（歩留まりを足す前のバックアップなど）は、今の歩留まりをそのまま使う（知らないうちに90%へ戻さないため）
+  if (!cloudYieldColumn) yields = loadYieldsFrom({});
+  else if (d.yields !== undefined) yields = loadYieldsFrom({ ...yields, ...Object.fromEntries(varieties.filter(v => d.yields[v] !== undefined).map(v => [v, d.yields[v]])) });
   ensureAllIds(false);
   // バックアップの内容で、Supabase をまとめて置きかえる（1行ずつ更新日時を確かめない）
   cloudReplaceAll = true;
@@ -3311,10 +3386,11 @@ function applyBackup(d) {
     [SHIPMENTS_STORAGE_KEY, shipments],
     [CUSTOMERS_STORAGE_KEY, customers],
     [INVENTORY_STORAGE_KEY, inventory],
-    [PRICES_STORAGE_KEY, prices]
+    [PRICES_STORAGE_KEY, prices],
+    [YIELDS_STORAGE_KEY, yields]
   ]);
   if (!saved) {
-    ({ reservations, shipments, customers, inventory, prices } = previous);
+    ({ reservations, shipments, customers, inventory, prices, yields } = previous);
     refreshAll();
     return false;
   }
@@ -3327,6 +3403,9 @@ function applyBackup(d) {
   detail.hidden = true;
   detail.innerHTML = "";
   refreshAll();
+  if (!cloudYieldColumn && isPlainObject(d.yields) && varieties.some(v => d.yields[v] !== undefined && Number(d.yields[v]) !== DEFAULT_YIELD_PERCENT)) {
+    notify("Supabase で supabase-yield.sql をまだ実行していないため、バックアップの歩留まりは読み込まず、90%にしています。", "warn", 12000);
+  }
   return true;
 }
 

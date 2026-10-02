@@ -127,6 +127,7 @@
           <section class="total-card inventory-card">
             <p>総在庫量</p>
             <strong id="dashboardInventory">0kg</strong>
+            <small id="dashboardShippable" class="card-sub"></small>
           </section>
           <section class="total-card shipment-card">
             <p>総出荷量</p>
@@ -211,20 +212,23 @@
 
       <main id="inventoryView" class="view-panel" hidden>
         <h2>在庫管理</h2>
-        <p class="inventory-help">品種ごとの在庫量を入力してください。</p>
+        <p class="inventory-help">品種ごとの在庫量・歩留まり・単価を入力してください。</p>
         <div class="mode-switch" role="group" aria-label="在庫の判定方法">
           <span class="mode-label">判定方法</span>
-          <button type="button" class="mode-button active" id="stockModeShipped" data-mode="shipped" aria-pressed="true" data-action="setStockMode" data-arg="shipped">出荷ベース<small>在庫−出荷</small></button>
-          <button type="button" class="mode-button" id="stockModeReserved" data-mode="reserved" aria-pressed="false" data-action="setStockMode" data-arg="reserved">予約ベース<small>在庫−予約</small></button>
+          <button type="button" class="mode-button active" id="stockModeShipped" data-mode="shipped" aria-pressed="true" data-action="setStockMode" data-arg="shipped">出荷ベース<small>出荷できる量−出荷</small></button>
+          <button type="button" class="mode-button" id="stockModeReserved" data-mode="reserved" aria-pressed="false" data-action="setStockMode" data-arg="reserved">予約ベース<small>出荷できる量−予約</small></button>
         </div>
+        <p class="inventory-help" id="yieldHelp"></p>
         <p class="inventory-help" id="stockModeHelp"></p>
         <p class="inventory-help" id="priceHelp"></p>
         <div class="table-wrapper">
-          <table class="inventory-table">
+          <table class="inventory-table card-table">
             <thead>
               <tr>
                 <th>品種</th>
-                <th>在庫量</th>
+                <th>在庫量<br><small>精米前</small></th>
+                <th>歩留まり(%)</th>
+                <th>出荷できる量<br><small>精米後</small></th>
                 <th>予約量</th>
                 <th>単価(円/kg)</th>
                 <th id="stockRemainHeader">残り在庫</th>
@@ -316,7 +320,8 @@
             <thead>
               <tr>
                 <th>品種</th>
-                <th>在庫量</th>
+                <th>在庫量(精米前)</th>
+                <th>出荷できる量</th>
                 <th>予約量</th>
                 <th>出荷量</th>
                 <th>未出荷</th>

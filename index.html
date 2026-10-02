@@ -3,20 +3,26 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 読み込んでよいもの・通信してよい先を、この中に書いたものだけに決める（Content-Security-Policy）。
+         万一、細工した文字が画面に入っても、スクリプトとして動かず、ほかのサイトへデータを送れないようにするため。
+         別の Supabase につなぐときは、connect-src の URL も supabase-config.js の Project URL に変えること -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://aacfbxcbuesrfolmxltc.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
+    <!-- ほかのサイトへ移るときに、このページのアドレスを伝えない -->
+    <meta name="referrer" content="no-referrer">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=27">
+    <link rel="stylesheet" href="style.css?v=28">
   </head>
   <body>
     <div class="container">
       <h1>🌾 米予約管理</h1>
       <div id="cloudUser" class="cloud-user" hidden>
         <span>ログイン中：<span id="cloudUserEmail"></span></span>
-        <button type="button" class="cancel-button" onclick="logout()">ログアウト</button>
+        <button type="button" class="cancel-button" data-action="logout">ログアウト</button>
       </div>
       <p id="cloudStatus" class="cloud-status" role="status" aria-live="polite"></p>
       <div id="cloudError" class="cloud-error" role="alert" hidden>
         <p id="cloudErrorText"></p>
-        <button type="button" id="cloudRetryButton" onclick="retryCloud()">もう一度保存する</button>
+        <button type="button" id="cloudRetryButton" data-action="retryCloud">もう一度保存する</button>
       </div>
       <p id="printTitle" class="print-only"></p>
       <nav class="view-tabs" role="tablist" aria-label="表示切り替え">
@@ -40,7 +46,7 @@
           <div class="field">
             <label for="name">顧客（名前・ふりがな・電話番号で探す）</label>
             <div class="customer-picker">
-              <input id="name" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="nameSuggest" aria-describedby="namePicked customerLockNote">
+              <input id="name" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="nameSuggest" aria-describedby="namePicked customerLockNote" maxlength="200">
               <button type="button" id="nameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
               <ul id="nameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
             </div>
@@ -62,8 +68,8 @@
             <select id="channel"></select>
           </div>
           <div class="form-actions">
-            <button id="submitButton" onclick="addReservation()">予約を追加</button>
-            <button id="cancelEditButton" class="cancel-button" hidden onclick="cancelEdit()">キャンセル</button>
+            <button id="submitButton" data-action="addReservation">予約を追加</button>
+            <button id="cancelEditButton" class="cancel-button" hidden data-action="cancelEdit">キャンセル</button>
           </div>
         </div>
         <h2>予約一覧</h2>
@@ -88,8 +94,8 @@
           </select>
         </div>
         <div class="list-tools">
-          <button type="button" class="tool-button" onclick="exportReservationsCsv()">表示中の一覧をCSVで保存</button>
-          <button type="button" class="tool-button" onclick="printCurrentList()">この一覧を印刷</button>
+          <button type="button" class="tool-button" data-action="exportReservationsCsv">表示中の一覧をCSVで保存</button>
+          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
         </div>
         <div class="table-wrapper">
           <table class="card-table">
@@ -208,8 +214,8 @@
         <p class="inventory-help">品種ごとの在庫量を入力してください。</p>
         <div class="mode-switch" role="group" aria-label="在庫の判定方法">
           <span class="mode-label">判定方法</span>
-          <button type="button" class="mode-button active" id="stockModeShipped" data-mode="shipped" aria-pressed="true" onclick="setStockMode('shipped')">出荷ベース<small>在庫−出荷</small></button>
-          <button type="button" class="mode-button" id="stockModeReserved" data-mode="reserved" aria-pressed="false" onclick="setStockMode('reserved')">予約ベース<small>在庫−予約</small></button>
+          <button type="button" class="mode-button active" id="stockModeShipped" data-mode="shipped" aria-pressed="true" data-action="setStockMode" data-arg="shipped">出荷ベース<small>在庫−出荷</small></button>
+          <button type="button" class="mode-button" id="stockModeReserved" data-mode="reserved" aria-pressed="false" data-action="setStockMode" data-arg="reserved">予約ベース<small>在庫−予約</small></button>
         </div>
         <p class="inventory-help" id="stockModeHelp"></p>
         <p class="inventory-help" id="priceHelp"></p>
@@ -245,7 +251,7 @@
           <div class="field">
             <label for="shipmentName">顧客（名前・ふりがな・電話番号で探す）</label>
             <div class="customer-picker">
-              <input id="shipmentName" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipmentNameSuggest" aria-describedby="shipmentNamePicked">
+              <input id="shipmentName" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipmentNameSuggest" aria-describedby="shipmentNamePicked" maxlength="200">
               <button type="button" id="shipmentNameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
               <ul id="shipmentNameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
             </div>
@@ -263,15 +269,15 @@
           </div>
           <div class="field">
             <label for="shipmentMemo">メモ</label>
-            <input id="shipmentMemo" type="text">
+            <input id="shipmentMemo" type="text" maxlength="5000">
           </div>
           <div class="field">
             <label for="shipmentReservation">対象の予約</label>
             <select id="shipmentReservation" disabled></select>
           </div>
           <div class="form-actions">
-            <button id="shipmentSubmitButton" onclick="addShipment()">出荷を登録</button>
-            <button id="cancelShipmentEditButton" class="cancel-button" hidden onclick="cancelShipmentEdit()">キャンセル</button>
+            <button id="shipmentSubmitButton" data-action="addShipment">出荷を登録</button>
+            <button id="cancelShipmentEditButton" class="cancel-button" hidden data-action="cancelShipmentEdit">キャンセル</button>
           </div>
         </div>
         <div id="varietyMismatchNotice" class="data-warning" role="status" hidden></div>
@@ -286,8 +292,8 @@
           </select>
         </div>
         <div class="list-tools">
-          <button type="button" class="tool-button" onclick="exportShipmentsCsv()">表示中の一覧をCSVで保存</button>
-          <button type="button" class="tool-button" onclick="printCurrentList()">この一覧を印刷</button>
+          <button type="button" class="tool-button" data-action="exportShipmentsCsv">表示中の一覧をCSVで保存</button>
+          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
         </div>
         <div class="table-wrapper">
           <table class="card-table">
@@ -326,7 +332,7 @@
         <p class="section-help">まだ出荷していない分がある顧客です。未出荷は、顧客ごと・品種ごとに「予約−出荷」を出して、残りがある分だけを足した量です。出荷管理で登録した出荷だけを出荷済みとして数えます（予約の状態を「出荷済み」にしただけでは減りません）。ダッシュボードの未出荷量は全体を品種ごとに差し引くため、この合計と合わないことがあります。</p>
         <p id="unshippedCustomerSummary" class="unshipped-summary"></p>
         <div class="list-tools">
-          <button type="button" class="tool-button" onclick="printCurrentList()">この一覧を印刷</button>
+          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
         </div>
         <div class="table-wrapper">
           <table class="card-table">
@@ -354,27 +360,27 @@
         <div class="form customer-form">
           <div class="field">
             <label for="customerName">顧客名（必須）</label>
-            <input id="customerName" type="text" placeholder="例：山田太郎">
+            <input id="customerName" type="text" placeholder="例：山田太郎" maxlength="200">
           </div>
           <div class="field">
             <label for="customerFurigana">ふりがな</label>
-            <input id="customerFurigana" type="text" placeholder="例：やまだたろう">
+            <input id="customerFurigana" type="text" placeholder="例：やまだたろう" maxlength="200">
           </div>
           <div class="field">
             <label for="customerPhone">電話番号</label>
-            <input id="customerPhone" type="tel" placeholder="例：090-0000-0000">
+            <input id="customerPhone" type="tel" placeholder="例：090-0000-0000" maxlength="50">
           </div>
           <div class="field">
             <label for="customerAddress">住所</label>
-            <input id="customerAddress" type="text" placeholder="例：東京都">
+            <input id="customerAddress" type="text" placeholder="例：東京都" maxlength="1000">
           </div>
           <div class="field">
             <label for="customerMemo">メモ</label>
-            <input id="customerMemo" type="text">
+            <input id="customerMemo" type="text" maxlength="5000">
           </div>
           <div class="form-actions">
-            <button id="customerSubmitButton" onclick="saveCustomer()">顧客を登録</button>
-            <button id="cancelCustomerEditButton" class="cancel-button" hidden onclick="cancelCustomerEdit()">キャンセル</button>
+            <button id="customerSubmitButton" data-action="saveCustomer">顧客を登録</button>
+            <button id="cancelCustomerEditButton" class="cancel-button" hidden data-action="cancelCustomerEdit">キャンセル</button>
           </div>
         </div>
         <div class="filters">
@@ -388,8 +394,8 @@
           </select>
         </div>
         <div class="list-tools">
-          <button type="button" class="tool-button" onclick="exportCustomersCsv()">表示中の一覧をCSVで保存</button>
-          <button type="button" class="tool-button" onclick="printCurrentList()">この一覧を印刷</button>
+          <button type="button" class="tool-button" data-action="exportCustomersCsv">表示中の一覧をCSVで保存</button>
+          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
         </div>
         <div class="table-wrapper">
           <table class="card-table">
@@ -415,10 +421,11 @@
       <section class="backup-panel" id="backupPanel">
         <h2>データのバックアップ</h2>
         <p id="backupStatus" class="backup-status"></p>
+        <p id="backupRemind" class="backup-remind" hidden></p>
         <div class="backup-actions">
-          <button type="button" id="exportBackupButton" onclick="exportBackup()">データを書き出す</button>
-          <button type="button" id="importBackupButton" class="cancel-button" onclick="document.getElementById('importFile').click()">データを読み込む</button>
-          <input type="file" id="importFile" accept=".json,application/json" hidden onchange="importBackup(event)">
+          <button type="button" id="exportBackupButton" data-action="exportBackup">データを書き出す</button>
+          <button type="button" id="importBackupButton" class="cancel-button" data-action="openImportFile">データを読み込む</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
         </div>
         <p class="backup-note">書き出したファイルには顧客の名前・電話番号・住所が含まれます。GitHubなどインターネット上に公開しないでください。</p>
       </section>
@@ -429,7 +436,7 @@
     <div id="cloudLoading" class="cloud-loading" role="alert">
       <div class="cloud-loading-box">
         <p id="cloudLoadingText">Supabase からデータを読み込んでいます…</p>
-        <button type="button" id="cloudReloadButton" onclick="location.reload()" hidden>もう一度読み込む</button>
+        <button type="button" id="cloudReloadButton" data-action="reloadPage" hidden>もう一度読み込む</button>
       </div>
     </div>
     <!-- ログイン画面（ログインするまでは、ほかの画面を操作できない） -->
@@ -444,10 +451,13 @@
         <button type="submit" id="loginButton">ログイン</button>
       </form>
     </div>
-    <!-- 読み込む順番：supabase-js（CDN）→ 接続先の設定 → 接続用の関数 → アプリ本体 -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js" integrity="sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok" crossorigin="anonymous"></script>
+    <!-- 読み込む順番：supabase-js → 接続先の設定 → 接続用の関数 → アプリ本体 -->
+    <!-- supabase-js は、外のサイト（CDN）からではなく、このリポジトリに置いたもの（npm の @supabase/supabase-js 2.117.2 の dist/umd/supabase.js と同じ中身）を使う。
+         同じリポジトリのファイルなので、integrity（中身の確かめ）は付けない（付けると、index.html を直接開いたとき（file://）に読み込めなくなるため）。
+         置いたファイルの sha384 は Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok（版を上げるときに、npm のものと同じかをこれで確かめる） -->
+    <script src="vendor/supabase-js-2.117.2.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="supabase-client.js?v=25"></script>
-    <script src="app.js?v=27"></script>
+    <script src="supabase-client.js?v=26"></script>
+    <script src="app.js?v=28"></script>
   </body>
 </html>

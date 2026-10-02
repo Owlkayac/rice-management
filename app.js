@@ -1618,11 +1618,99 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div><button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
   // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
   d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
   d.querySelector(".detail-close-button").onclick = () => d.hidden = true;
+  const mergeButton = d.querySelector(".merge-button");
+  if (mergeButton) mergeButton.onclick = () => mergeCustomer(c.customerId, document.getElementById("mergeTarget").value);
   d.scrollIntoView({ behavior: "smooth" });
+}
+
+// 顧客の詳細に出す「ほかの顧客とまとめる」欄。同じ人を2人分登録してしまったときに使う。
+// まとめる先の候補は、名前がよく似た顧客を先に並べる（いちばん使う場面なので）
+function mergeFormHtml(c) {
+  const others = customers.filter(x => x.customerId !== c.customerId);
+  if (!others.length) return "";
+  const names = customerDisplayNames();
+  const similar = others.filter(x => compareKey(x.name) === compareKey(c.name));
+  const rest = others.filter(x => compareKey(x.name) !== compareKey(c.name));
+  const options = [...similar, ...rest].map(x => `<option value="${esc(x.customerId)}">${esc(names.get(x.customerId).label)}</option>`).join("");
+  return `<div class="detail-card merge-card no-print"><h3>ほかの顧客とまとめる</h3><p class="section-help">同じ人を2人分登録してしまったときに使います。この顧客の予約・出荷をすべて、選んだ顧客に移してから、この顧客を削除します。</p><label for="mergeTarget">まとめる先の顧客</label><select id="mergeTarget"><option value="">選んでください</option>${options}</select><button type="button" class="tool-button merge-button">選んだ顧客にまとめる</button></div>`;
+}
+
+// まとめるときに、空いていれば引き継ぐ項目
+const MERGE_FIELDS = [{ key: "phone", label: "電話番号" }, { key: "address", label: "住所" }, { key: "furigana", label: "ふりがな" }];
+
+// 両方の顧客に入っていて中身が違う項目（まとめた先の値を残し、まとめる元の値はメモに書き写す）
+function mergeKeptValues(from, to) {
+  return MERGE_FIELDS.filter(({ key }) => {
+    const a = String(to[key] || "").trim();
+    const b = String(from[key] || "").trim();
+    return a && b && compareKey(a) !== compareKey(b);
+  });
+}
+
+// 顧客 fromId を顧客 toId にまとめる：from の予約・出荷を to に付け替え、to で空いている項目を from の内容で埋め、from を削除する
+function mergeCustomer(fromId, toId) {
+  if (!ensureFresh()) return;
+  if (!toId) {
+    notify("まとめる先の顧客を選んでください", "warn");
+    return;
+  }
+  // 編集中の予約・出荷・顧客があると、まとめたあとの顧客と食い違うので、先に終わらせてもらう
+  if (editingReservationId !== null || editingShipmentId !== null || editingCustomerId !== null) {
+    notify("予約・出荷・顧客のどれかを編集中です。保存するかキャンセルしてから、まとめてください", "warn", 8000);
+    return;
+  }
+  const from = findCustomer(fromId);
+  const to = findCustomer(toId);
+  if (!from || !to || from === to) {
+    notify("まとめる顧客が見つかりません（削除された可能性があります）。もう一度選んでください", "warn");
+    return;
+  }
+  const s = customerStats(from);
+  const names = customerDisplayNames();
+  const kept = mergeKeptValues(from, to);
+  const keptText = kept.length ? `\n\n次の内容は「${to.name}」の内容を残し、「${from.name}」の内容はメモに書き写します。\n${kept.map(k => `・${k.label}：${to[k.key]}（${from.name}：${from[k.key]}）`).join("\n")}` : "";
+  confirmThen(`「${names.get(from.customerId).label}」を「${names.get(to.customerId).label}」にまとめますか？\n\n予約${s.rs.length}件・出荷${s.ss.length}件を「${to.name}」に移し、「${from.name}」は顧客管理から削除します。\n電話番号・住所・ふりがなが「${to.name}」で空なら、「${from.name}」の内容を入れます。メモは両方をつなげます。${keptText}\n\nこの操作は元に戻せません。`, () => {
+    // 確認の間に変わっていないか、もう一度探し直す
+    const fromNow = findCustomer(fromId);
+    const toNow = findCustomer(toId);
+    if (!fromNow || !toNow) {
+      notify("まとめる顧客が見つかりません（削除された可能性があります）。もう一度選んでください", "warn");
+      return;
+    }
+    const move = item => {
+      if (customerFor(item)?.customerId !== fromId) return;
+      item.customerId = toId;
+      item.name = toNow.name;
+    };
+    reservations.forEach(move);
+    shipments.forEach(move);
+    // 両方に入っていて違う値は、まとめる元の値が消えないよう、メモに書き写す
+    const keptNotes = mergeKeptValues(fromNow, toNow).map(k => `${k.label}（${fromNow.name}）：${String(fromNow[k.key]).trim()}`);
+    MERGE_FIELDS.forEach(({ key }) => {
+      if (!String(toNow[key] || "").trim() && String(fromNow[key] || "").trim()) toNow[key] = fromNow[key];
+    });
+    // メモは、まとめた先のメモはそのまま残し、まとめる元から足す部分のうち、まだ入っていないものだけを「 / 」でつなぐ
+    // （何度まとめても同じ内容が重ならないように）
+    const toMemo = String(toNow.memo || "").trim();
+    const existing = new Set(toMemo.split("/").map(m => m.trim()));
+    const added = [fromNow.memo, ...keptNotes].flatMap(m => String(m || "").split(" / ")).map(m => m.trim()).filter(m => m && !existing.has(m));
+    toNow.memo = [toMemo, ...new Set(added)].filter(Boolean).join(" / ");
+    customers = customers.filter(x => x.customerId !== fromId);
+    saveIdLinkedData();
+    // 予約・出荷の入力欄でまとめる元の顧客を選んでいたら、まとめた先の顧客に選び直す（選択が黙って外れないように）
+    ["customerSelect", "shipmentCustomerSelect"].forEach(id => {
+      const select = document.getElementById(id);
+      if (select.value === fromId) select.value = toId;
+    });
+    document.getElementById("customerDetail").hidden = true;
+    // 出荷の「対象の予約」も refreshAll の中で、まとめた先の顧客の予約で作り直される（選んでいた予約は残る）
+    refreshAll();
+    notify(`「${fromNow.name}」を「${toNow.name}」にまとめました`, "info", 8000);
+  });
 }
 
 function switchView(id) {
@@ -1908,6 +1996,10 @@ async function insertCloudRows(table, keyColumn, entries) {
 async function sendCloudChanges() {
   // バックアップの読み込みの印は、送り始めるときに一度だけ見る（送っている途中で変わっても、この送信には使わない）
   const replaceAll = cloudReplaceAll;
+  // 行の削除は、すべての表の追加・書きかえが終わってから行う。
+  // （顧客をまとめるときなど、予約・出荷を別の顧客に付け替えてから元の顧客を消す。先に顧客だけ消えて途中で止まると、
+  //   予約・出荷がどの顧客にもつながらなくなるため）
+  const deletions = [];
   for (const { table, label, keyColumn, rows } of currentCloudRows()) {
     const base = cloudBaseline[table];
     const versions = cloudVersions[table];
@@ -1929,14 +2021,7 @@ async function sendCloudChanges() {
         changed.forEach(([key, json]) => base.set(key, json));
         rememberCloudVersions(table, keyColumn, data);
       }
-      if (removed.length) {
-        const { error } = await deleteSupabaseRows(table, keyColumn, removed);
-        if (error) return error;
-        removed.forEach(key => {
-          base.delete(key);
-          versions.delete(key);
-        });
-      }
+      if (removed.length) deletions.push({ table, label, keyColumn, removed, base, versions });
       continue;
     }
     const added = changed.filter(([key]) => !base.has(key));
@@ -1961,6 +2046,19 @@ async function sendCloudChanges() {
         versions.set(key, data);
       }
       base.set(key, json);
+    }
+    if (removed.length) deletions.push({ table, label, keyColumn, removed, base, versions });
+  }
+  // 削除は、ほかの行から使われる側（顧客）を最後にするため、表の並びと逆の順（出荷 → 予約 → 顧客）で行う
+  for (const { table, label, keyColumn, removed, base, versions } of deletions.reverse()) {
+    if (replaceAll) {
+      const { error } = await deleteSupabaseRows(table, keyColumn, removed);
+      if (error) return error;
+      removed.forEach(key => {
+        base.delete(key);
+        versions.delete(key);
+      });
+      continue;
     }
     // 無くなった行は、誰も変えていないときだけ消す
     for (const key of removed) {

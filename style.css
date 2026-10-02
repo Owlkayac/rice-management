@@ -546,6 +546,24 @@ small {
   margin-bottom: 0;
 }
 
+/* 「ほかの顧客とまとめる」欄：縦に並べ、スマホでも選択欄とボタンが幅いっぱいになるようにする */
+.merge-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 24px 0 12px;
+}
+
+/* 元に戻せない操作なので、印刷などのふだんのボタンと見分けられるように赤系の枠にする */
+.merge-card .merge-button {
+  border-color: #b3261e;
+  color: #b3261e;
+}
+
+.merge-card select {
+  width: 100%;
+}
+
 .list-tools {
   display: flex;
   flex-wrap: wrap;

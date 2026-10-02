@@ -1,12 +1,14 @@
 # Supabase 接続テストの手順
 
+> **【ログイン機能を入れたあと（`SUPABASE_LOGIN.md`）は】** この手順書の SQL（`supabase-schema.sql`）は実行しないでください。データが消え、ルールが「誰でも読み書きできる」に戻ります。「temp all」のルールも作り直さないでください。ログインしていない人に「permission denied」（コード 42501）が出るのは、正しく守れている印です。
+
 米予約管理アプリから Supabase の `reservations` テーブルを読めるか（接続できるか）を確かめる手順です。
 
 > ※ アプリは Supabase にデータを保存するようになりました（手順は `SUPABASE_SWITCH.md`）。本物のデータにテスト用の予約が混ざらないよう、テストページの「テスト予約を追加」ボタンは無くし、「一覧を取得」だけにしました。
 
 - テストには `supabase-test.html` を使います。いつもの予約管理の画面（`index.html`）とは別のページです。読むだけで、データは変えません。
 - 関係するファイル
-  - `supabase-config.js`：接続先（Project URL と Publishable key）。GitHub には上げません（`.gitignore` に入っています）
+  - `supabase-config.js`：接続先（Project URL と Publishable key）。ログイン機能を付けてからは、スマホで使うために GitHub に上げています（`SUPABASE_LOGIN.md`）
   - `supabase-config.example.js`：上のファイルの見本（値は空）
   - `supabase-client.js`：Supabase への接続と、テーブルの読み書きの処理
   - `supabase-test.html`：接続テスト用のページ
@@ -55,7 +57,9 @@
 
 ## 1. 準備：接続先の設定ファイル（supabase-config.js）を作る
 
-`supabase-config.js` は GitHub には上げていないので、**取ってきたフォルダには入っていません。** 見本の `supabase-config.example.js` をコピーして作ります。
+※ ログイン機能を付けたあとは、`supabase-config.js` も GitHub に入っているので、この手順はいりません。
+
+（ログイン機能を入れる前の話）`supabase-config.js` は GitHub には上げていなかったので、**取ってきたフォルダには入っていませんでした。** 見本の `supabase-config.example.js` をコピーして作ります。
 
 ### コピーして名前を変える
 - **Mac（Finder）**
@@ -89,7 +93,7 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_xxxxxxxx";
 - 値の前後の `"`（ダブルクォーテーション）は消さないでください。
   - Mac の「テキストエディット」で `"` を打ち直すと、自動で `“ ”`（形の違う引用符）に変わり、ファイルが読めなくなることがあります。消してしまったときは、VS Code で開いて直すか、テキストエディットの **編集 → 自動置換 → スマート引用符** のチェックを外してから打ち直してください。
 - **入れてよいのは Publishable key だけです。** このファイルはブラウザで動くので、それ以外のキーは絶対に書かないでください（`sb_publishable_` で始まらないキーが入っていると、テストページは接続せずに止まります）。
-- `supabase-config.js` は `.gitignore` に入っているので、Git でコミットしても GitHub には上がりません。見本の `supabase-config.example.js` には値を入れないでください（こちらは GitHub に上がります）。
+- 見本の `supabase-config.example.js` には値を入れないでください。
 
 ---
 
@@ -142,7 +146,7 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_xxxxxxxx";
 | 「Failed to fetch」（Safari では「Load failed」） | Project URL が間違っている、またはインターネットにつながっていない | URL を Supabase の画面からコピーし直す（最後に余計な文字や空白が無いか確かめる） |
 | 「Invalid API key」 | Publishable key が間違っている（別のプロジェクトのキー、一部だけコピーした、など） | キーをコピーし直す。Supabase からの英語のヒントに別の種類のキーの名前が出ることがありますが、使ってよいのは `sb_publishable_` で始まる Publishable key だけです |
 | エラーは出ないのに一覧が0件（Table Editor では行が見えるのに） | RLS で読み取り（SELECT）が許されていない（この場合、Supabase はエラーではなく0件を返します） | Authentication → Policies で、`reservations` テーブルに読み取りを許すポリシーがあるか確かめる |
-| 「permission denied」「row-level security」（コード 42501） | RLS（行ごとのアクセス制限）で止められている | Supabase の Authentication → Policies で、`reservations` テーブルに読み書きを許すポリシー（temp all）があるか確かめる。無ければ作り直す |
+| 「permission denied」「row-level security」（コード 42501） | ログイン機能を入れたあと：ログインしていない人を止めている（正しい動き）。入れる前：RLS で止められている | ログイン機能を入れたあとは、何もしなくて大丈夫です。入れる前なら、Authentication → Policies で `reservations` テーブルに読み書きを許すポリシーがあるか確かめる |
 | 「Could not find the table」（コード PGRST205） | テーブルが無い | `SUPABASE_SWITCH.md` の手順で、`supabase-schema.sql` を実行する |
 | 「Could not find the ○○ column」（コード PGRST204）、「column ○○ does not exist」（コード 42703） | 列の名前が違う、または列が無い | `SUPABASE_SWITCH.md` の手順で、`supabase-schema.sql` を実行する |
 
@@ -161,6 +165,6 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_xxxxxxxx";
 
 ## 6. テストが終わったら（大事）
 
-- 今は動作確認のため、RLS のポリシーが「全部許可（temp all）」になっています。このままだと、Project URL と Publishable key を知っている人なら誰でも、予約を読んだり、書き換えたり、消したりできます。
+- （ログイン機能を入れる前の話）動作確認のあいだは、RLS のポリシーが「全部許可（temp all）」になっていました。このままだと、Project URL と Publishable key を知っている人なら誰でも、予約を読んだり、書き換えたり、消したりできます。
 - テストが終わったら、本番で使う前に、必要な人だけが読み書きできるポリシーに変えてください。
 - **ログイン機能を付けてポリシーを変えるまでは、実際のお客様のデータ（名前・電話番号・住所など）を入れないでください。** テスト用のデータだけで使ってください。

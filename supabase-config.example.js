@@ -1,6 +1,5 @@
 // Supabase の接続先の見本です。
-// 使うときは、このファイルをコピーして「supabase-config.js」という名前にし、下の2つに値を入れてください。
-// supabase-config.js は .gitignore に入っているので、GitHub には上がりません。
+// 別の Supabase につなぐときは、このファイルをコピーして「supabase-config.js」という名前にし、下の2つに値を入れてください。
 //
 // 値の確認場所（Supabase のダッシュボード）：
 // - Project URL：Project Settings → Data API（「https://〜.supabase.co」の形）

@@ -86,22 +86,89 @@ async function fetchAllSupabaseRows(table, orderColumns) {
   }
 }
 
-// 行を保存する（keyColumn が同じ行があれば書きかえ、無ければ追加する）。多いときは分けて送る
+// 行を保存する（keyColumn が同じ行があれば、確かめずに書きかえ、無ければ追加する）。多いときは分けて送る。
+// バックアップの読み込みのように、まとめて置きかえるときだけ使う。
+// data には、保存した行の { keyColumn の値, updated_at } の一覧を返す
 async function upsertSupabaseRows(table, rows, keyColumn) {
   const where = `${table} の保存`;
   if (!supabaseClient) return setupFailure(where);
   try {
+    const saved = [];
     for (let i = 0; i < rows.length; i += SUPABASE_UPSERT_CHUNK) {
-      const { error } = await supabaseClient.from(table).upsert(rows.slice(i, i + SUPABASE_UPSERT_CHUNK), { onConflict: keyColumn });
+      const { data, error } = await supabaseClient.from(table).upsert(rows.slice(i, i + SUPABASE_UPSERT_CHUNK), { onConflict: keyColumn }).select(`${keyColumn},updated_at`);
       if (error) return supabaseFailure(where, error);
+      saved.push(...(data || []));
     }
-    return { data: rows.length, error: null };
+    return { data: saved, error: null };
   } catch (err) {
     return supabaseFailure(where, err);
   }
 }
 
-// keyColumn が keys のどれかに当たる行を消す。多いときは分けて送る
+// 行を追加する。多いときは分けて送る。data には、追加した行の { keyColumn の値, updated_at } の一覧を返す
+// （同じ番号の行がもうあるときは、エラー（コード 23505）になる）
+async function insertSupabaseRows(table, rows, keyColumn) {
+  const where = `${table} の追加`;
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const saved = [];
+    for (let i = 0; i < rows.length; i += SUPABASE_UPSERT_CHUNK) {
+      const { data, error } = await supabaseClient.from(table).insert(rows.slice(i, i + SUPABASE_UPSERT_CHUNK)).select(`${keyColumn},updated_at`);
+      if (error) return supabaseFailure(where, error);
+      saved.push(...(data || []));
+    }
+    return { data: saved, error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// 1行を書きかえる。ただし、読み込んだときから誰も変えていない（updated_at が同じ）ときだけ。
+// 書きかえたら data に新しい updated_at、ほかで変えられていた（または消されていた）ら data に null を返す
+async function updateSupabaseRowIfUnchanged(table, keyColumn, key, updatedAt, row) {
+  const where = `${table} の保存`;
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const { data, error } = await supabaseClient.from(table).update(row).eq(keyColumn, key).eq("updated_at", updatedAt).select("updated_at");
+    if (error) return supabaseFailure(where, error);
+    return { data: data && data.length ? data[0].updated_at : null, error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// 1行を消す。ただし、読み込んだときから誰も変えていない（updated_at が同じ）ときだけ。
+// 消したら data に true、ほかで変えられていた（または先に消されていた）ら false を返す
+async function deleteSupabaseRowIfUnchanged(table, keyColumn, key, updatedAt) {
+  const where = `${table} の削除`;
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const { data, error } = await supabaseClient.from(table).delete().eq(keyColumn, key).eq("updated_at", updatedAt).select(keyColumn);
+    if (error) return supabaseFailure(where, error);
+    return { data: !!(data && data.length), error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// keyColumn が keys のどれかに当たる行を読む（保存の返事が届かなかったときに、本当は保存できていたかを確かめるため）
+async function fetchSupabaseRowsByKeys(table, keyColumn, keys) {
+  const where = `${table} の確認`;
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const rows = [];
+    for (let i = 0; i < keys.length; i += SUPABASE_DELETE_CHUNK) {
+      const { data, error } = await supabaseClient.from(table).select("*").in(keyColumn, keys.slice(i, i + SUPABASE_DELETE_CHUNK));
+      if (error) return supabaseFailure(where, error);
+      rows.push(...(data || []));
+    }
+    return { data: rows, error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// keyColumn が keys のどれかに当たる行を、確かめずに消す。多いときは分けて送る（まとめて置きかえるときだけ使う）
 async function deleteSupabaseRows(table, keyColumn, keys) {
   const where = `${table} の削除`;
   if (!supabaseClient) return setupFailure(where);
@@ -114,6 +181,66 @@ async function deleteSupabaseRows(table, keyColumn, keys) {
   } catch (err) {
     return supabaseFailure(where, err);
   }
+}
+
+// ---------- ログイン ----------
+
+// 今ログインしているかを確かめる（ブラウザに残っているログインを使う）。ログインしていれば data に { email }、していなければ null
+async function getSupabaseUser() {
+  if (!supabaseClient) return setupFailure("ログインの確認");
+  try {
+    const { data, error } = await supabaseClient.auth.getSession();
+    if (error) return supabaseFailure("ログインの確認", error);
+    const user = data && data.session && data.session.user;
+    return { data: user ? { email: user.email || "" } : null, error: null };
+  } catch (err) {
+    return supabaseFailure("ログインの確認", err);
+  }
+}
+
+// メールアドレスとパスワードでログインする。できたら data に { email }
+async function signInSupabase(email, password) {
+  if (!supabaseClient) return setupFailure("ログイン");
+  try {
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if (error) return supabaseFailure("ログイン", error);
+    return { data: { email: (data.user && data.user.email) || email }, error: null };
+  } catch (err) {
+    return supabaseFailure("ログイン", err);
+  }
+}
+
+// ログアウトする（この端末のログインを消す。インターネットにつながっていなくても消せる）
+async function signOutSupabase() {
+  if (!supabaseClient) return setupFailure("ログアウト");
+  try {
+    const { error } = await supabaseClient.auth.signOut({ scope: "local" });
+    if (error) return supabaseFailure("ログアウト", error);
+    return { data: true, error: null };
+  } catch (err) {
+    return supabaseFailure("ログアウト", err);
+  }
+}
+
+// ログインしている人が、使う人のリスト（app_members）に入っているか。入っていれば data に true
+// （データベースのルールと同じ関数 is_app_member で確かめる）
+async function isSupabaseMember() {
+  if (!supabaseClient) return setupFailure("使う人の確認");
+  try {
+    const { data, error } = await supabaseClient.rpc("is_app_member");
+    if (error) return supabaseFailure("使う人の確認", error);
+    return { data: data === true, error: null };
+  } catch (err) {
+    return supabaseFailure("使う人の確認", err);
+  }
+}
+
+// ログインが切れた（ログアウトした・期限が切れて延長できなかった）ときに、onSignedOut を呼ぶ
+function watchSupabaseSignOut(onSignedOut) {
+  if (!supabaseClient) return;
+  supabaseClient.auth.onAuthStateChange(event => {
+    if (event === "SIGNED_OUT") onSignedOut();
+  });
 }
 
 // 予約の一覧を、created_at の新しい順に取得する（接続テストのページで使う）

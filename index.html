@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=26">
+    <link rel="stylesheet" href="style.css?v=27">
   </head>
   <body>
     <div class="container">
@@ -38,16 +38,20 @@
             <select id="month"></select>
           </div>
           <div class="field">
-            <label for="customerSelect">顧客</label>
-            <select id="customerSelect" aria-describedby="customerLockNote">
+            <label for="name">顧客（名前・ふりがな・電話番号で探す）</label>
+            <div class="customer-picker">
+              <input id="name" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="nameSuggest" aria-describedby="namePicked customerLockNote">
+              <button type="button" id="nameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
+              <ul id="nameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
+            </div>
+            <p id="nameSuggestStatus" class="visually-hidden" aria-live="polite"></p>
+            <p id="namePicked" class="customer-picked" hidden></p>
+            <small>名前・ふりがな・電話番号の一部を入れ、出てきた候補から選びます。初めての人は名前を入れたまま保存すると、顧客管理にも自動で登録されます。</small>
+            <p id="customerLockNote" class="field-warning" hidden></p>
+            <!-- 選んだ顧客の番号を持っておくための欄（画面には出さない） -->
+            <select id="customerSelect" hidden aria-hidden="true" tabindex="-1">
               <option value="">新しい顧客（名前欄に入力）</option>
             </select>
-            <small>登録済みの人は顧客の欄で選んでください。初めての人は名前欄に入力すると、保存したときに顧客管理にも自動で登録されます。</small>
-            <p id="customerLockNote" class="field-warning" hidden></p>
-          </div>
-          <div class="field">
-            <label for="name">名前（自動入力・直接入力も可）</label>
-            <input id="name" type="text" placeholder="例：山田太郎">
           </div>
           <div class="field">
             <label for="kg">重量（kg）</label>
@@ -239,15 +243,19 @@
             <input id="shipmentDate" type="date">
           </div>
           <div class="field">
-            <label for="shipmentCustomerSelect">顧客</label>
-            <select id="shipmentCustomerSelect">
+            <label for="shipmentName">顧客（名前・ふりがな・電話番号で探す）</label>
+            <div class="customer-picker">
+              <input id="shipmentName" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipmentNameSuggest" aria-describedby="shipmentNamePicked">
+              <button type="button" id="shipmentNameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
+              <ul id="shipmentNameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
+            </div>
+            <p id="shipmentNameSuggestStatus" class="visually-hidden" aria-live="polite"></p>
+            <p id="shipmentNamePicked" class="customer-picked" hidden></p>
+            <small>名前・ふりがな・電話番号の一部を入れ、出てきた候補から選びます。初めての人は名前を入れたまま保存すると、顧客管理にも自動で登録されます。</small>
+            <!-- 選んだ顧客の番号を持っておくための欄（画面には出さない） -->
+            <select id="shipmentCustomerSelect" hidden aria-hidden="true" tabindex="-1">
               <option value="">新しい顧客（名前欄に入力）</option>
             </select>
-            <small>登録済みの人は顧客の欄で選んでください。初めての人は名前欄に入力すると、保存したときに顧客管理にも自動で登録されます。</small>
-          </div>
-          <div class="field">
-            <label for="shipmentName">名前（自動入力・直接入力も可）</label>
-            <input id="shipmentName" type="text" placeholder="例：山田太郎">
           </div>
           <div class="field">
             <label for="shipmentKg">重量（kg）</label>
@@ -440,6 +448,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js" integrity="sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok" crossorigin="anonymous"></script>
     <script src="supabase-config.js"></script>
     <script src="supabase-client.js?v=25"></script>
-    <script src="app.js?v=26"></script>
+    <script src="app.js?v=27"></script>
   </body>
 </html>

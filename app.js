@@ -815,11 +815,15 @@ function commitReservation(r) {
   // 顧客の登録が見つからなかった予約の顧客を選び直したら、紐づいた出荷も同じ顧客に移す
   // （予約と出荷の顧客がそろっていないと、出荷の編集で「対象の予約」を選べなくなるため）
   // 移すのは、登録が見つからない出荷と、名前だけで同じ顧客につながっている出荷だけ（登録済みの別の顧客の出荷は動かさない。addReservation で止めている）
-  const moved = customerWasMissing && r.customerId ? linkedShipments(before.id).filter(x => !customerFor(x) || customerFor(x).customerId === r.customerId) : [];
   const owner = findCustomer(r.customerId);
+  const ownerName = owner ? owner.name : r.name;
+  // すでにその顧客の id と名前になっている出荷は数えない（変わらない出荷まで「変えました」と知らせないため）
+  const moved = customerWasMissing && r.customerId
+    ? linkedShipments(before.id).filter(x => (!customerFor(x) || customerFor(x).customerId === r.customerId) && (x.customerId !== r.customerId || x.name !== ownerName))
+    : [];
   moved.forEach(s => {
     s.customerId = r.customerId;
-    s.name = owner ? owner.name : r.name;
+    s.name = ownerName;
   });
   if (editingReservationId === null) {
     r.id = uid("reservation");
@@ -1235,7 +1239,10 @@ function unselectableReservationReason(reservationId) {
   const r = reservations.find(x => x.id === reservationId);
   if (!r) return "この出荷が紐づいていた予約が見つかりません（削除された可能性があります）。";
   const where = `（${reservationLinkText(reservationId)}）`;
-  if (!shipmentCustomerSelect.value) return `この出荷の顧客の登録が見つからないため、紐づいていた予約を「対象の予約」に選べません${where}。`;
+  if (!shipmentCustomerSelect.value) {
+    const fixReservation = customerFor(r) ? "" : "予約の顧客も見つからないときは、この編集をキャンセルし、先に予約を「編集」して顧客を選び直してください（紐づいている出荷も一緒にその顧客に移ります）。";
+    return `この出荷の顧客の登録が見つからないため、紐づいていた予約を「対象の予約」に選べません${where}。先に顧客の欄で顧客を選び直すと、その人の予約なら「対象の予約」に選べます。${fixReservation}`;
+  }
   const owner = customerFor(r);
   // 予約側を直すときに選ぶべき顧客（この出荷の顧客。ほかの人を選ぶと、この出荷を動かさないよう予約の保存で止まる）
   const fix = `直すには、この編集をキャンセルし、先に予約を「編集」して顧客を「${customerDisplayNames().get(shipmentCustomerSelect.value)?.label || ""}」にしてください（紐づけは残ります）。`;
@@ -1855,7 +1862,8 @@ function mergeCustomer(fromId, toId) {
     const existing = new Set(toMemo.split(" / ").map(m => m.trim()));
     const fromMemoParts = String(fromNow.memo || "").split(" / ").map(m => m.trim()).filter(m => m && !existing.has(m));
     const newNotes = keptNotes.map(m => m.trim()).filter(m => m && !` / ${toMemo} / `.includes(` / ${m} / `));
-    const added = [...fromMemoParts, ...newNotes];
+    // まとめる元のメモの中のくり返しや、メモと書き写す値の重なりは1つにする
+    const added = [...new Set([...fromMemoParts, ...newNotes])];
     toNow.memo = [toMemo, ...added].filter(Boolean).join(" / ");
     customers = customers.filter(x => x.customerId !== fromId);
     saveIdLinkedData();
@@ -3013,7 +3021,10 @@ document.getElementById("shipmentCustomerSelect").onchange = e => {
   // 出荷の編集中は、元の出荷が紐づいていた予約も候補にする（顧客を A→B→A と戻したときに、元の予約が選ばれるように）
   const current = document.getElementById("shipmentReservation").value;
   const original = editingShipmentId === null ? null : shipments.find(x => x.id === editingShipmentId);
-  const owns = id => !!id && customerFor(reservations.find(x => x.id === id) || {})?.customerId === e.target.value;
+  const owns = id => {
+    const r = id ? reservations.find(x => x.id === id) : null;
+    return !!r && customerFor(r)?.customerId === e.target.value;
+  };
   refreshShipmentReservationOptions(owns(current) ? current : owns(original?.reservationId) ? original.reservationId : "");
 };
 document.getElementById("name").oninput = () => detachCustomerIfRenamed("customerSelect", "name");

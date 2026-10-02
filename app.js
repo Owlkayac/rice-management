@@ -481,10 +481,15 @@ function validYield(x) {
   return x !== null && x !== "" && Number.isFinite(n) && n >= YIELD_MIN_PERCENT && n <= YIELD_MAX_PERCENT;
 }
 
+// 歩留まり率を 0.1% 単位にそろえる（入力欄・バックアップ・Supabase のどこから来ても同じにするため）
+function roundYield(n) {
+  return Math.round(Number(n) * 10) / 10;
+}
+
 // 歩留まり率が入っていない（または範囲の外の）品種は、初めの値（90%）にする
 function loadYieldsFrom(x) {
   const r = {};
-  varieties.forEach(v => r[v] = validYield(x?.[v]) ? Number(x[v]) : DEFAULT_YIELD_PERCENT);
+  varieties.forEach(v => r[v] = validYield(x?.[v]) ? roundYield(x[v]) : DEFAULT_YIELD_PERCENT);
   return r;
 }
 
@@ -1523,13 +1528,12 @@ function displayInventory() {
         refreshAll();
         return;
       }
-      const value = Number(e.target.value);
       if (!validYield(e.target.value)) {
         notify(`歩留まりは${YIELD_MIN_PERCENT}〜${YIELD_MAX_PERCENT}%の数で入力してください`, "warn");
         refreshAll();
         return;
       }
-      yields[v] = Math.round(value * 10) / 10;
+      yields[v] = roundYield(e.target.value);
       save(YIELDS_STORAGE_KEY, yields);
       refreshAll();
     };

@@ -2,11 +2,47 @@
 -- 実行のしかたは SUPABASE_SWITCH.md の「1. テーブルを作る」を見てください。
 --
 -- ・Supabase の SQL Editor に、このファイルの中身をすべて貼り付けて、1回だけ実行します。
--- ・もう一度実行すると、4つのテーブルを作り直すため、入っているデータはすべて消えます。
+-- ・まだデータが入っていないときだけ、4つのテーブルを空の状態で作り直します。
 -- ・【大事】ログイン機能（supabase-auth.sql）を入れたあとは、このファイルを実行しないでください。
 --   データが消えるうえ、ルールが「誰でも読み書きできる」に戻ります。
 -- ・行ごとのアクセス制限（RLS）は、ログイン機能を付けるまでの仮の設定で「誰でも読み書きできる」です。
 --   この間は、実際のお客様のデータを入れないでください。
+-- ・ログイン機能を入れたあと、またはデータ（予約・顧客・出荷、0 でない在庫・単価）が入っているときは、
+--   何も変えずにエラーで止まります（下の ⓪）。
+
+begin;
+
+-- ⓪ 安全のための確認：ログイン機能やセキュリティの SQL を入れたあと、またはデータが入っているときは、
+--    何も消さずにここで止める（間違えて実行しても、データと守りを失わないため）
+do $$
+declare
+  t text;
+  has_rows boolean;
+begin
+  -- ログイン機能（supabase-auth.sql）やセキュリティ（supabase-hardening.sql）を入れた印が、1つでもあれば止める
+  if to_regclass('public.app_members') is not null
+     or to_regclass('public.audit_log') is not null
+     or to_regprocedure('public.is_app_member()') is not null
+     or exists (select 1 from pg_policies where schemaname = 'public' and policyname = 'members only') then
+    raise exception 'このファイルは実行できません。ログイン機能を入れたあとに実行すると、データが消え、ルールが「誰でも読み書きできる」に戻るためです。何も変わっていません。歩留まりの列を足すときは supabase-yield.sql を実行してください。';
+  end if;
+  foreach t in array array['reservations', 'customers', 'shipments'] loop
+    if to_regclass('public.' || t) is not null then
+      execute format('select exists (select 1 from public.%I)', t) into has_rows;
+      if has_rows then
+        raise exception 'このファイルは実行できません。テーブル % にデータが入っていて、実行すると消えてしまうためです。何も変わっていません。', t;
+      end if;
+    end if;
+  end loop;
+  -- 在庫・単価は、A〜F の6行が必ずあるため、0 でない値が入っているかで確かめる
+  if to_regclass('public.variety_settings') is not null then
+    execute 'select exists (select 1 from public.variety_settings where stock_kg <> 0 or price <> 0)' into has_rows;
+    if has_rows then
+      raise exception 'このファイルは実行できません。在庫・単価に値が入っていて、実行すると消えてしまうためです。何も変わっていません。';
+    end if;
+  end if;
+end
+$$;
 
 -- ① 前のテーブルを消す（接続テストで作った reservations も、ここで消えます）
 drop table if exists public.reservations;
@@ -80,3 +116,5 @@ grant select, insert, update, delete on public.reservations to anon, authenticat
 grant select, insert, update, delete on public.customers to anon, authenticated;
 grant select, insert, update, delete on public.shipments to anon, authenticated;
 grant select, insert, update, delete on public.variety_settings to anon, authenticated;
+
+commit;

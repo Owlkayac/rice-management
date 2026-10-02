@@ -1700,6 +1700,11 @@ function varietySettingRows() {
 // 最後に Supabase と合わせたときの行（テーブルごとに「行を見分ける値 → 行の JSON の文字」）。
 // 今のデータとくらべて、変わった行・増えた行は保存し、無くなった行は消す
 const cloudBaseline = {};
+// 最後に Supabase と合わせたときの、行ごとの更新日時（テーブルごとに「行を見分ける値 → updated_at」）。
+// 書きかえ・削除は「この更新日時から誰も変えていないとき」だけ行う（ほかの人の変更を上書きしないため）
+const cloudVersions = {};
+// バックアップの読み込みのあと、次に送るときは、更新日時を確かめずにまとめて置きかえる
+let cloudReplaceAll = false;
 
 // 今のデータから、テーブルごとの行の一覧を作る
 function currentCloudRows() {
@@ -1709,11 +1714,73 @@ function currentCloudRows() {
   ];
 }
 
+// 送った行の更新日時を覚える
+function rememberCloudVersions(table, keyColumn, savedRows) {
+  savedRows.forEach(row => cloudVersions[table].set(row[keyColumn], row.updated_at));
+}
+
+// Supabase の行が、こちらが送った内容と同じなら true（送った列だけをくらべる）
+function sameAsSent(dbRow, sentRow) {
+  return Object.keys(sentRow).every(c => {
+    const a = dbRow[c] ?? null;
+    const b = sentRow[c] ?? null;
+    // 数の列（amount_kg など）は、Supabase から文字で返ってくることもあるので、数にしてくらべる
+    if (typeof b === "number") return a !== null && Number(a) === b;
+    return a === b;
+  });
+}
+
+// 書きかえ・削除・追加が「ほかの人の変更とぶつかった」ように見えたとき、本当にぶつかったのかを確かめる。
+// 前に送った保存が、返事だけ届かずに保存できていた場合は、ぶつかったのではなく保存できていた、と分かる。
+// 保存できていた行は、更新日時を覚えて true を返す。本当にぶつかっていたら false。読めなかったらエラーを返す
+async function confirmAlreadySaved(table, keyColumn, entries, deleted) {
+  const keys = entries.map(([key]) => key);
+  const { data, error } = await fetchSupabaseRowsByKeys(table, keyColumn, keys);
+  if (error) return { error };
+  const found = new Map(data.map(row => [row[keyColumn], row]));
+  if (deleted) return { ok: keys.every(key => !found.has(key)) };
+  const ok = entries.every(([key, json]) => found.has(key) && sameAsSent(found.get(key), JSON.parse(json)));
+  if (ok) entries.forEach(([key]) => cloudVersions[table].set(key, found.get(key).updated_at));
+  return { ok };
+}
+
+// 新しい行を追加する。同じ番号の行がもうある（23505）ときは、1行ずつ確かめる。
+// 前の送信が届いていて内容が同じ行は「保存できていた」、まだ無い行はもう一度追加、内容が違う行は「ぶつかった」とする
+// （行が多くて分けて送ったとき、前半だけ届いていた、という場合にも、後半の行を失わないため）
+async function insertCloudRows(table, keyColumn, entries) {
+  const { data, error } = await insertSupabaseRows(table, entries.map(([, json]) => JSON.parse(json)), keyColumn);
+  if (!error) {
+    rememberCloudVersions(table, keyColumn, data);
+    return {};
+  }
+  if (error.code !== "23505") return { error };
+  const found = await fetchSupabaseRowsByKeys(table, keyColumn, entries.map(([key]) => key));
+  if (found.error) return { error: found.error };
+  const byKey = new Map(found.data.map(row => [row[keyColumn], row]));
+  const missing = [];
+  for (const [key, json] of entries) {
+    const row = byKey.get(key);
+    if (!row) missing.push([key, json]);
+    else if (!sameAsSent(row, JSON.parse(json))) return { conflict: true };
+    else cloudVersions[table].set(key, row.updated_at);
+  }
+  if (!missing.length) return {};
+  const again = await insertSupabaseRows(table, missing.map(([, json]) => JSON.parse(json)), keyColumn);
+  if (again.error && again.error.code === "23505") return { conflict: true };
+  if (again.error) return { error: again.error };
+  rememberCloudVersions(table, keyColumn, again.data);
+  return {};
+}
+
 // 前に合わせたときから変わった分だけ、Supabase へ送る。送れなかったらエラーを返す（送れたら null）。
-// 途中で失敗しても、送れた分は控え（cloudBaseline）に入れるので、次はその続きから送り直す
+// 途中で失敗しても、送れた分は控え（cloudBaseline）に入れるので、次はその続きから送り直す。
+// ほかの人が先に同じ行を変えていた（または消していた）ときは、そこで止めて { conflict: 種類 } を返す
 async function sendCloudChanges() {
+  // バックアップの読み込みの印は、送り始めるときに一度だけ見る（送っている途中で変わっても、この送信には使わない）
+  const replaceAll = cloudReplaceAll;
   for (const { table, label, keyColumn, rows } of currentCloudRows()) {
     const base = cloudBaseline[table];
+    const versions = cloudVersions[table];
     const current = new Map();
     for (const row of rows) {
       const key = row[keyColumn];
@@ -1723,19 +1790,79 @@ async function sendCloudChanges() {
       current.set(key, JSON.stringify(row));
     }
     const changed = [...current].filter(([key, json]) => base.get(key) !== json);
-    if (changed.length) {
-      const { error } = await upsertSupabaseRows(table, changed.map(([, json]) => JSON.parse(json)), keyColumn);
-      if (error) return error;
-      changed.forEach(([key, json]) => base.set(key, json));
-    }
     const removed = [...base.keys()].filter(key => !current.has(key));
-    if (removed.length) {
-      const { error } = await deleteSupabaseRows(table, keyColumn, removed);
+    if (replaceAll) {
+      // バックアップの読み込み：確かめずに、まとめて置きかえる
+      if (changed.length) {
+        const { data, error } = await upsertSupabaseRows(table, changed.map(([, json]) => JSON.parse(json)), keyColumn);
+        if (error) return error;
+        changed.forEach(([key, json]) => base.set(key, json));
+        rememberCloudVersions(table, keyColumn, data);
+      }
+      if (removed.length) {
+        const { error } = await deleteSupabaseRows(table, keyColumn, removed);
+        if (error) return error;
+        removed.forEach(key => {
+          base.delete(key);
+          versions.delete(key);
+        });
+      }
+      continue;
+    }
+    const added = changed.filter(([key]) => !base.has(key));
+    const updated = changed.filter(([key]) => base.has(key));
+    // 新しい行は追加する
+    if (added.length) {
+      const result = await insertCloudRows(table, keyColumn, added);
+      if (result.error) return result.error;
+      if (result.conflict) return { conflict: label };
+      added.forEach(([key, json]) => base.set(key, json));
+    }
+    // 前からある行は、誰も変えていないときだけ書きかえる
+    for (const entry of updated) {
+      const [key, json] = entry;
+      const { data, error } = await updateSupabaseRowIfUnchanged(table, keyColumn, key, versions.get(key), JSON.parse(json));
       if (error) return error;
-      removed.forEach(key => base.delete(key));
+      if (data === null) {
+        const check = await confirmAlreadySaved(table, keyColumn, [entry], false);
+        if (check.error) return check.error;
+        if (!check.ok) return { conflict: label };
+      } else {
+        versions.set(key, data);
+      }
+      base.set(key, json);
+    }
+    // 無くなった行は、誰も変えていないときだけ消す
+    for (const key of removed) {
+      const { data, error } = await deleteSupabaseRowIfUnchanged(table, keyColumn, key, versions.get(key));
+      if (error) return error;
+      if (!data) {
+        // もう消えているなら、前の送信が届いていた（または、ほかの人も消した）ので、消せている
+        // （番号は時刻と乱数で付けるので、ほかの人が消したあとに同じ番号の行を作り直すことは、まず起きない）
+        const check = await confirmAlreadySaved(table, keyColumn, [[key]], true);
+        if (check.error) return check.error;
+        if (!check.ok) return { conflict: label };
+      }
+      base.delete(key);
+      versions.delete(key);
     }
   }
+  // まとめて置きかえる送信が最後まで終わったときだけ、印を下ろす
+  if (replaceAll) cloudReplaceAll = false;
   return null;
+}
+
+// ほかの人が先に同じデータを変えていたときは、この画面の残りの変更は送らずに、Supabase の最新の内容に入れかえる
+function handleCloudConflict(label) {
+  if (cloudReplaceAll) {
+    notify("保存がぶつかったため、読み込んだバックアップは Supabase に入れられませんでした。最新の内容を確かめてから、もう一度バックアップを読み込んでください。", "error", 15000);
+  }
+  cloudSaveQueued = false;
+  cloudSaveError = null;
+  // 読み直すまで、データを変える操作を止める
+  cloudLoadedAt = 0;
+  notify(`ほかの人が先に同じ${label}のデータを変えていた（または消していた）ため、あなたの変更の一部は保存しませんでした。最新の内容を読み込みます。内容を確かめて、必要ならもう一度操作してください。`, "warn", 15000);
+  setTimeout(() => refreshFromCloud(true), 0);
 }
 
 // 保存があったら、少しあとで（同じ操作の中の保存をまとめてから）Supabase へ送る。
@@ -1754,6 +1881,10 @@ async function runCloudSave() {
     while (cloudSaveQueued) {
       cloudSaveQueued = false;
       const error = await sendCloudChanges();
+      if (error && error.conflict) {
+        handleCloudConflict(error.conflict);
+        break;
+      }
       if (error) {
         // 送れなかった変更は、次の保存か「もう一度保存する」で送り直す
         cloudSaveQueued = true;
@@ -1797,14 +1928,17 @@ function explainCloudError(error) {
   if (/Failed to fetch|NetworkError|Load failed/i.test(text)) {
     return "インターネットにつながっているか確かめてください。";
   }
+  if (error.code === "PGRST301" || /JWT expired/i.test(text)) {
+    return "ログインの期限が切れました。ページを開き直して、もう一度ログインしてください。";
+  }
   if (error.code === "42501" || /permission denied|row-level security/i.test(text)) {
-    return "Supabase の行ごとのアクセス制限（RLS）で止められています。Supabase の Authentication → Policies で、4つのテーブルに「temp all」のルールがあるか確かめて相談してください（テーブルを作る SQL をもう一度実行すると、データがすべて消えます）。";
+    return "Supabase の行ごとのアクセス制限（RLS）で止められています。ログインしている人が、使う人のリスト（app_members）に入っているか、管理する人に確かめてもらってください。";
   }
   if (/Invalid API key|No API key|JWT|apikey/i.test(text)) {
     return "supabase-config.js の Publishable key が正しいか確かめてください。";
   }
   if (error.code === "PGRST204" || error.code === "PGRST205" || error.code === "42703" || error.code === "42P01" || /does not exist|Could not find/i.test(text)) {
-    return "Supabase に必要なテーブルや列がありません。SUPABASE_SWITCH.md の手順で、supabase-schema.sql を実行してください。";
+    return "Supabase に必要なテーブルや列がありません。SUPABASE_LOGIN.md の手順で、supabase-auth.sql を実行したか確かめてください（supabase-schema.sql は、データが消えるので実行しないでください）。";
   }
   return "";
 }
@@ -1847,6 +1981,7 @@ function showCloudStatus() {
 
 // 読み込みの間（と、読み込めなかったとき）は、画面全体をおおって操作できないようにする
 function showCloudLoading(text, canRetry) {
+  document.getElementById("loginScreen").hidden = true;
   document.getElementById("cloudLoadingText").textContent = text;
   document.getElementById("cloudReloadButton").hidden = !canRetry;
   document.getElementById("cloudLoading").hidden = false;
@@ -1865,12 +2000,18 @@ async function fetchCloudData() {
   const failed = results.find(r => r.error);
   if (failed) return { error: failed.error };
   let skipped = 0;
+  const versions = {};
   const lists = CLOUD_TABLES.map((t, i) => {
     const list = [];
+    versions[t.table] = new Map();
     results[i].data.forEach(row => {
       const item = t.fromRow(row);
-      if (item) list.push(item);
-      else skipped++;
+      if (item) {
+        list.push(item);
+        versions[t.table].set(row[t.keyColumn], row.updated_at);
+      } else {
+        skipped++;
+      }
     });
     return list;
   });
@@ -1881,7 +2022,8 @@ async function fetchCloudData() {
     stock[row.variety] = row.stock_kg;
     price[row.variety] = row.price;
   });
-  return { lists, stock: normalizeInventory(stock), price: loadPricesFrom(price), savedVarieties: new Set(settings.map(row => row.variety)), skipped };
+  versions[CLOUD_VARIETY_TABLE] = new Map(settings.map(row => [row.variety, row.updated_at]));
+  return { lists, stock: normalizeInventory(stock), price: loadPricesFrom(price), savedVarieties: new Set(settings.map(row => row.variety)), versions, skipped };
 }
 
 // 読んだデータを cloudStore と控え（cloudBaseline）に入れる。今の画面のデータと違っていたら true を返す
@@ -1898,6 +2040,9 @@ function applyCloudData(d) {
   });
   // 在庫・単価の控えは、Supabase に行があった品種だけ（無い品種は、次に保存するときに行を作る）
   cloudBaseline[CLOUD_VARIETY_TABLE] = new Map(varietySettingRows().filter(row => d.savedVarieties.has(row.variety)).map(row => [row.variety, JSON.stringify(row)]));
+  Object.assign(cloudVersions, d.versions);
+  // Supabase の内容に入れかえたので、まとめて置きかえる印も下ろす
+  cloudReplaceAll = false;
   cloudLoadedAt = Date.now();
   return changed;
 }
@@ -2008,9 +2153,123 @@ window.addEventListener("pageshow", e => {
 
 // Supabase に送れていない変更があるうちにページを閉じようとしたら、ブラウザの確認を出す
 window.addEventListener("beforeunload", e => {
+  if (cloudSigningOut) return;
   if (!cloudSaving && !cloudSaveQueued && !cloudSaveError) return;
   e.preventDefault();
   e.returnValue = "";
+});
+
+// ---------- ログイン ----------
+
+// ログアウトのために開き直すときは true（閉じる前の確認を出さないため）
+let cloudSigningOut = false;
+
+function setLoginMessage(text, isError) {
+  const el = document.getElementById("loginMessage");
+  el.textContent = text;
+  el.classList.toggle("login-message-error", !!isError);
+}
+
+// ログイン画面を出す（ほかの画面は操作できないようにする）
+function showLoginScreen(message) {
+  document.getElementById("cloudLoading").hidden = true;
+  document.getElementById("loginScreen").hidden = false;
+  document.querySelector(".container").inert = true;
+  setLoginMessage(message || "", !!message);
+  document.getElementById("loginEmail").focus();
+}
+
+function hideLoginScreen() {
+  document.getElementById("loginScreen").hidden = true;
+}
+
+// ログインのエラーを、分かりやすい文にする
+function loginErrorText(error) {
+  const text = `${error.message} ${error.code}`;
+  if (/Invalid login credentials/i.test(text)) return "メールアドレスかパスワードが違います。";
+  if (/Email not confirmed/i.test(text)) return "このメールアドレスは、まだ確認が済んでいません。管理する人に、Supabase で登録し直してもらってください（登録するときに「Auto Confirm User」にチェックを入れます）。";
+  if (/rate limit|too many/i.test(text)) return "ログインを何度も失敗したため、しばらくログインできません。少し時間をおいてから、もう一度ためしてください。";
+  return `ログインできませんでした。\n${cloudErrorText(error)}`;
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const email = document.getElementById("loginEmail").value.trim();
+  const passwordInput = document.getElementById("loginPassword");
+  if (!email || !passwordInput.value) {
+    setLoginMessage("メールアドレスとパスワードを入れてください。", true);
+    return;
+  }
+  const button = document.getElementById("loginButton");
+  button.disabled = true;
+  setLoginMessage("ログインしています…", false);
+  const { data, error } = await signInSupabase(email, passwordInput.value);
+  button.disabled = false;
+  if (error) {
+    setLoginMessage(loginErrorText(error), true);
+    return;
+  }
+  passwordInput.value = "";
+  hideLoginScreen();
+  afterSignIn(data.email);
+}
+
+// ログインできたら、使う人のリストに入っているかを確かめてから、データを読み込む
+async function afterSignIn(email) {
+  showCloudLoading("使う人のリストを確かめています…", false);
+  const { data, error } = await isSupabaseMember();
+  if (error) {
+    showCloudLoading(`使う人のリストを確かめられませんでした。\n${cloudErrorText(error)}\n直したら「もう一度読み込む」を押してください。`, true);
+    return;
+  }
+  if (!data) {
+    // リストに入っていない人は、ログインを消してログイン画面に戻す
+    await signOutSupabase();
+    showLoginScreen(`「${email}」は、使う人のリストに入っていないため、使えません。管理する人に、Supabase の app_members に追加してもらってください。`);
+    return;
+  }
+  document.getElementById("cloudUserEmail").textContent = email;
+  document.getElementById("cloudUser").hidden = false;
+  loadFromCloud();
+}
+
+// ページを開いたとき：ログインしていればデータを読み込み、していなければログイン画面を出す
+async function startCloud() {
+  showCloudLoading("ログインを確かめています…", false);
+  if (supabaseSetupProblem) {
+    showCloudLoading(`Supabase の準備ができていません。\n${supabaseSetupProblem}\n直したら「もう一度読み込む」を押してください。`, true);
+    return;
+  }
+  const { data, error } = await getSupabaseUser();
+  if (error) {
+    showCloudLoading(`ログインを確かめられませんでした。\n${cloudErrorText(error)}\n直したら「もう一度読み込む」を押してください。`, true);
+    return;
+  }
+  if (!data) {
+    showLoginScreen("");
+    return;
+  }
+  afterSignIn(data.email);
+}
+
+async function logout() {
+  if (hasUnsentCloudChanges() && !confirm("Supabase に保存できていない変更があります。ログアウトすると、その変更は消えます。ログアウトしますか？")) return;
+  cloudSigningOut = true;
+  await signOutSupabase();
+  // 画面のデータを残さないよう、ページを開き直す（ログイン画面が出る）
+  location.reload();
+}
+
+// ほかのタブでログアウトしたときや、ログインの期限が切れて延長できなかったときは、開き直してログイン画面を出す
+watchSupabaseSignOut(() => {
+  if (cloudSigningOut) return;
+  if (cloudReady) {
+    if (hasUnsentCloudChanges()) {
+      alert("ほかのタブでログアウトしたか、ログインの期限が切れたため、ログイン画面に戻ります。Supabase に保存できていなかった変更は、保存されません。");
+    }
+    cloudSigningOut = true;
+    location.reload();
+  }
 });
 
 // ---------- 納品書・請求書 ----------
@@ -2272,6 +2531,8 @@ function applyBackup(d) {
   inventory = normalizeInventory(d.inventory);
   prices = loadPricesFrom(d.prices);
   ensureAllIds(false);
+  // バックアップの内容で、Supabase をまとめて置きかえる（1行ずつ更新日時を確かめない）
+  cloudReplaceAll = true;
   const saved = saveAll([
     ["reservations", reservations],
     [SHIPMENTS_STORAGE_KEY, shipments],
@@ -2325,8 +2586,13 @@ function importBackup(event) {
       return;
     }
     const d = result.data;
-    const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\nSupabase に保存している現在のデータは、すべてこの内容に置きかわります（ほかのパソコンやスマホで見ているデータも置きかわります）。必要なら先に「データを書き出す」で保存してください。`;
+    const message = `このバックアップを読み込みますか？\n\n【読み込む内容】予約${d.reservations.length}件 / 出荷${d.shipments.length}件 / 顧客${d.customers.length}件\n【現在のデータ】予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件\n\nSupabase に保存している現在のデータは、この内容に置きかわります（ほかのパソコンやスマホで見ているデータも置きかわります。ただし、この画面が最後に読み込んだあとで、ほかの人が足したデータは残ります）。必要なら先に「データを書き出す」で保存してください。`;
     confirmThen(message, () => {
+      // Supabase へ送っている途中は、送り終わるまで待ってもらう（送っている変更と、バックアップが混ざらないように）
+      if (cloudSaving || hasUnsentCloudChanges()) {
+        finish("Supabase へ保存している途中のため、バックアップを読み込めませんでした。「Supabase に保存済み」になってから、もう一度読み込んでください。");
+        return;
+      }
       if (applyBackup(d)) {
         finish("バックアップを読み込みました", "success");
       } else {
@@ -2712,4 +2978,5 @@ document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView
 fillSheetSettings();
 if (sheetConfig() === null) document.getElementById("sheetSettings").open = true;
 refreshAll();
-loadFromCloud();
+document.getElementById("loginForm").addEventListener("submit", submitLogin);
+startCloud();

@@ -1007,6 +1007,62 @@ small {
   margin-top: 14px;
 }
 
+/* ログイン中の人と、ログアウトボタン（画面の上） */
+.cloud-user {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 12px;
+  margin: -8px 0 8px;
+  font-size: 14px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.cloud-user[hidden] {
+  display: none;
+}
+
+.cloud-user button {
+  min-height: 44px;
+  padding: 4px 14px;
+  font-size: 14px;
+}
+
+/* ログイン画面 */
+.login-box {
+  text-align: left;
+}
+
+.login-box h2 {
+  margin-top: 0;
+}
+
+.login-box label {
+  display: block;
+  margin: 12px 0 4px;
+  font-weight: bold;
+}
+
+.login-box input {
+  width: 100%;
+}
+
+.login-box button {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.login-box .login-message {
+  min-height: 1.6em;
+  margin: 12px 0 0;
+}
+
+.login-message-error {
+  color: #b00020;
+}
+
 @media print {
   body {
     padding: 0;
@@ -1028,6 +1084,7 @@ small {
   .cloud-status,
   .cloud-error,
   .cloud-loading,
+  .cloud-user,
   .no-print,
   .action-cell,
   .action-td,

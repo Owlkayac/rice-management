@@ -1,2 +1,3 @@
-# Supabase の接続先（Project URL と Publishable key）。見本は supabase-config.example.js
-supabase-config.js
+# supabase-config.js（Project URL と Publishable key）は、ログイン機能を付けてから GitHub に上げている。
+# Publishable key は公開される前提のキーで、データはログインと RLS（使う人のリスト）で守っている。
+# Publishable key 以外のキー（secret key・service_role key）は、どのファイルにも書かないこと。

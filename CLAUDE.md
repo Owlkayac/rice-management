@@ -1,10 +1,13 @@
 # 米予約管理Webアプリ
 
-米の直販の受注（予約・出荷・顧客・在庫）を管理する Web アプリ。HTML / CSS / JavaScript だけで作っていて、データはブラウザの localStorage に保存する。
+米の直販の受注（予約・出荷・顧客・在庫）を管理する Web アプリ。HTML / CSS / JavaScript だけで作っていて、データは Supabase に保存する（ログインした「使う人」だけが読み書きできる）。ブラウザ（localStorage）には、並び順などの画面の設定だけを保存する。GitHub Pages で公開している。
 
 - `index.html`：画面
 - `style.css`：見た目（スマホ表示を含む）
 - `app.js`：処理のすべて
+- `supabase-client.js`・`supabase-config.js`：Supabase への接続（Publishable key だけ。secret key・service_role key は書かない）
+- `vendor/`：外のサイトから読み込まないよう、リポジトリに置いた部品（supabase-js）
+- `supabase-*.sql`：Supabase の設定（ユーザーが SQL Editor で実行する）。`SECURITY.md`：セキュリティの対策と運用の手順
 
 ## コードを変更したときのルール（必ず守る）
 

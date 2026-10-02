@@ -1,3 +1,10 @@
+// ほかのサイトの中に（iframe で）埋め込まれて開かれたときは、画面を出さずに止める
+// （見えない形で重ねられて、ボタンを押させられる「クリックジャッキング」を防ぐため）
+if (window.top !== window.self) {
+  document.body.textContent = "このページは、ほかのサイトの中では開けません。";
+  throw new Error("ほかのサイトの中に埋め込まれていたため、止めました");
+}
+
 const LOW_STOCK_THRESHOLD = 100;
 const INVENTORY_STORAGE_KEY = "inventory";
 const SHIPMENTS_STORAGE_KEY = "shipments";
@@ -9,8 +16,20 @@ const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
 // 前に使っていたスプレッドシート連携の設定（URL・合言葉など）が、ブラウザに残っていれば消す
 // （連携は削除済み。使っていた端末すべてで一度アプリを開いたあとなら、この後片付けは消してよい）
 const OLD_SHEET_KEYS = ["sheetUrl", "sheetToken", "sheetSavedAt", "sheetSyncedData"];
+// Supabase に移る前に、ブラウザ（localStorage）に保存していた予約・出荷・顧客・在庫・単価（お客様の名前・電話・住所を含む）。
+// 今は Supabase だけに保存しているので、端末に残らないよう、開いたときに消す（ユーザーの判断で消すことにした）。
+// ※ 今のアプリは、この5つを localStorage からは読まない（cloudStore から読む）ので、消しても動きは変わらない
+const OLD_LOCAL_DATA_KEYS = ["reservations", "shipments", "customers", "inventory", "varietyPrices"];
 // 予約・出荷・顧客の id として受け付ける文字（英数字・「_」「-」）
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+// データベースの決まり（supabase-hardening.sql）と同じ上限。保存する前に、アプリでも同じ上限で確かめる
+// （決まりに合わない値を送ると、何度送り直しても保存できず、操作が止まってしまうため）
+const LIMITS = {
+  idLength: 100,
+  kg: 1000000,
+  stockOrPrice: 100000000,
+  text: { name: 200, furigana: 200, phone: 50, address: 1000, memo: 5000, channel: 50, month: 10, variety: 20, date: 20 }
+};
 const RESERVATION_SORT_KEY = "reservationSort";
 const SHIPMENT_SORT_KEY = "shipmentSort";
 const RESERVATION_SORTS = ["recent", "month", "variety", "name", "kg"];
@@ -1008,6 +1027,10 @@ function addReservation() {
     notify("kgを入力してください", "warn");
     return;
   }
+  if (!Number.isFinite(r.kg) || r.kg > LIMITS.kg) {
+    notify(`kgは${LIMITS.kg.toLocaleString("ja-JP")}までの数で入力してください`, "warn");
+    return;
+  }
   // 品種が空のまま保存すると、在庫や集計に入らず、請求書の単価も0円になるため止める
   if (!varieties.includes(r.variety)) {
     notify("品種を選んでください", "warn");
@@ -1428,7 +1451,13 @@ function displayInventory() {
         refreshAll();
         return;
       }
-      inventory[v] = Math.max(0, Number(e.target.value) || 0);
+      const value = Math.max(0, Number(e.target.value) || 0);
+      if (!Number.isFinite(value) || value > LIMITS.stockOrPrice) {
+        notify(`在庫量は${LIMITS.stockOrPrice.toLocaleString("ja-JP")}までの数で入力してください`, "warn");
+        refreshAll();
+        return;
+      }
+      inventory[v] = value;
       save(INVENTORY_STORAGE_KEY, inventory);
       refreshAll();
     };
@@ -1437,7 +1466,13 @@ function displayInventory() {
         refreshAll();
         return;
       }
-      prices[v] = Math.max(0, Number(e.target.value) || 0);
+      const value = Math.max(0, Number(e.target.value) || 0);
+      if (!Number.isFinite(value) || value > LIMITS.stockOrPrice) {
+        notify(`単価は${LIMITS.stockOrPrice.toLocaleString("ja-JP")}までの数で入力してください`, "warn");
+        refreshAll();
+        return;
+      }
+      prices[v] = value;
       save(PRICES_STORAGE_KEY, prices);
       refreshAll();
     };
@@ -1480,6 +1515,10 @@ function addShipment() {
   const s = shipmentValues();
   if (!s.date || !s.name || !s.kg || s.kg <= 0) {
     notify("出荷日・顧客・出荷kgを入力してください", "warn");
+    return;
+  }
+  if (!Number.isFinite(s.kg) || s.kg > LIMITS.kg) {
+    notify(`出荷kgは${LIMITS.kg.toLocaleString("ja-JP")}までの数で入力してください`, "warn");
     return;
   }
   const mismatch = customerNameMismatch(s.customerId, s.name);
@@ -2133,21 +2172,11 @@ function mergeCustomer(fromId, toId) {
       notify("まとめる顧客が見つかりません（削除された可能性があります）。もう一度選んでください", "warn");
       return;
     }
-    const move = item => {
-      if (customerFor(item)?.customerId !== fromId) return;
-      item.customerId = toId;
-      item.name = toNow.name;
-    };
-    reservations.forEach(move);
-    shipments.forEach(move);
     // 両方に入っていて違う値は、まとめる元の値が消えないよう、メモに書き写す
     const keptNotes = mergeKeptValues(fromNow, toNow).map(k => `${k.label}（${fromNow.name}）：${String(fromNow[k.key]).trim()}`);
     // 名前が違う人をまとめたとき（旧姓・屋号など）は、まとめる元の名前が消えないよう、メモに残す
     // （空白や全角・半角の違いだけは入力の揺れとみなし、同じ名前として残さない）
     if (compareKey(fromNow.name) !== compareKey(toNow.name)) keptNotes.unshift(`旧名（まとめた顧客）：${String(fromNow.name || "").trim()}`);
-    MERGE_FIELDS.forEach(({ key }) => {
-      if (!String(toNow[key] || "").trim() && String(fromNow[key] || "").trim()) toNow[key] = fromNow[key];
-    });
     // メモは、まとめた先のメモはそのまま残し、まとめる元から足す部分のうち、まだ入っていないものだけを「 / 」でつなぐ
     // （何度まとめても同じ内容が重ならないように）。
     // ・まとめる元のメモは「 / 」で区切り、区切った1つずつが、まとめた先のメモの区切りと同じなら足さない
@@ -2160,7 +2189,24 @@ function mergeCustomer(fromId, toId) {
     const newNotes = keptNotes.map(m => m.trim()).filter(m => m && !` / ${toMemo} / `.includes(` / ${m} / `));
     // まとめる元のメモの中のくり返しや、メモと書き写す値の重なりは1つにする
     const added = [...new Set([...fromMemoParts, ...newNotes])];
-    toNow.memo = [toMemo, ...added].filter(Boolean).join(" / ");
+    const mergedMemo = [toMemo, ...added].filter(Boolean).join(" / ");
+    // メモの長さは、データを1つも書きかえる前に確かめる（メモは MERGE_FIELDS に入っていないので、書き写しの前に計算しても同じ）
+    if (mergedMemo.length > LIMITS.text.memo) {
+      notify(`まとめるとメモが${LIMITS.text.memo}文字を超えるため、まとめられません。先に「編集」で、どちらかのメモを短くしてください`, "warn", 12000);
+      return;
+    }
+    // ここから先で、データを書きかえる（上の確認で止めたときに、途中まで書きかわったデータが残らないように）
+    const move = item => {
+      if (customerFor(item)?.customerId !== fromId) return;
+      item.customerId = toId;
+      item.name = toNow.name;
+    };
+    reservations.forEach(move);
+    shipments.forEach(move);
+    MERGE_FIELDS.forEach(({ key }) => {
+      if (!String(toNow[key] || "").trim() && String(fromNow[key] || "").trim()) toNow[key] = fromNow[key];
+    });
+    toNow.memo = mergedMemo;
     customers = customers.filter(x => x.customerId !== fromId);
     saveIdLinkedData();
     // 予約・出荷の入力欄でまとめる元の顧客を選んでいたら、まとめた先の顧客に選び直す（選択が黙って外れないように）
@@ -2618,6 +2664,9 @@ function explainCloudError(error) {
   if (/Failed to fetch|NetworkError|Load failed/i.test(text)) {
     return "インターネットにつながっているか確かめてください。";
   }
+  if (error.code === "23514") {
+    return "この変更は、データベースの決まりに合わない値（文字が長すぎる、量が大きすぎる、など）のため、保存できません。何度送っても同じです。ページを開き直すと、この変更を取り消して元に戻ります。";
+  }
   if (error.code === "PGRST301" || /JWT expired/i.test(text)) {
     return "ログインの期限が切れました。ページを開き直して、もう一度ログインしてください。";
   }
@@ -2757,6 +2806,7 @@ async function loadFromCloud() {
   hideCloudLoading();
   showCloudStatus();
   notifySkippedRows(d.skipped);
+  remindBackupOnce();
 }
 
 // まだ送っていない変更があれば true（このときは読み直さない。読み直すと、その変更が消えるため）
@@ -3104,13 +3154,38 @@ function timestampForFilename() {
   return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}`;
 }
 
+// バックアップ（「データを書き出す」）をすすめる間隔（日）
+const BACKUP_REMIND_DAYS = 7;
+
+// この端末で最後に書き出してから何日たったか（書き出したことが無ければ null）
+function daysSinceBackup() {
+  const last = read(LAST_BACKUP_STORAGE_KEY, null);
+  const lastDate = last ? new Date(last) : null;
+  if (!lastDate || Number.isNaN(lastDate.getTime())) return null;
+  return Math.floor((Date.now() - lastDate.getTime()) / (24 * 60 * 60 * 1000));
+}
+
 function showBackupStatus() {
   const el = document.getElementById("backupStatus");
   if (!el) return;
   const last = read(LAST_BACKUP_STORAGE_KEY, null);
   const lastDate = last ? new Date(last) : null;
-  const lastText = lastDate && !Number.isNaN(lastDate.getTime()) ? `最終バックアップ：${lastDate.toLocaleString("ja-JP")}` : "まだバックアップしていません";
+  const lastText = lastDate && !Number.isNaN(lastDate.getTime()) ? `最終バックアップ（この端末）：${lastDate.toLocaleString("ja-JP")}` : "この端末では、まだバックアップしていません";
   el.textContent = `現在のデータ：予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件　${lastText}`;
+  // バックアップを取る端末（一度でも書き出した端末）でだけ、決めた日数がたったら書き出しをすすめる
+  // （バックアップは、決めた1台の端末で取る決まりにしたため。ほかの端末で毎回知らせないように）
+  const days = daysSinceBackup();
+  const remind = document.getElementById("backupRemind");
+  if (!remind) return;
+  remind.hidden = days === null || days < BACKUP_REMIND_DAYS;
+  remind.textContent = `前回のバックアップから${days}日たっています。「データを書き出す」を押して、ファイルを保存してください。`;
+}
+
+// 開いたときに、書き出しの時期が来ていれば一度だけ知らせる（バックアップを取る端末でだけ）
+function remindBackupOnce() {
+  const days = daysSinceBackup();
+  if (days === null || days < BACKUP_REMIND_DAYS) return;
+  notify(`前回のバックアップから${days}日たっています。画面のいちばん下の「データを書き出す」で、ファイルに保存してください。`, "warn", 12000);
 }
 
 // 今のデータからバックアップを作る（ファイルへの書き出しに使う）
@@ -3164,19 +3239,23 @@ function validateBackup(obj) {
   // 画面への表示は esc() や textContent で守っているが、念のための二重の守りとして、
   // id には英数字・「_」「-」だけを受け付ける（細工した文字が入ったファイルを読み込まないように）。
   // 古いデータで id が無いものは、読み込んだあとに付け直す
-  const idOk = v => v === undefined || v === null || v === "" || (typeof v === "string" && SAFE_ID_PATTERN.test(v));
+  const idOk = v => v === undefined || v === null || v === "" || (typeof v === "string" && SAFE_ID_PATTERN.test(v) && v.length <= LIMITS.idLength);
+  // 文字の長さ・量・状態が、データベースの決まり（supabase-hardening.sql）に合うか
+  const textOk = (x, fields) => fields.every(f => x[f] === undefined || x[f] === null || String(x[f]).length <= LIMITS.text[f]);
+  const kgOk = v => v === undefined || v === null || v === "" || (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= LIMITS.kg);
+  const statusOk = v => v === undefined || v === null || STATUS_KEYS.includes(v);
   // 顧客の id は、使える文字の文字列のほか、古いデータに備えて「無し」と「0以上の整数」も受け付ける。
   // どちらも読み込んだあとに fixCustomerIds で文字列の id に直す
   const customerIdOk = v => idOk(v) || isLegacyNumericId(v);
-  const badReservation = d.reservations.findIndex(r => !(isPlainObject(r) && varietyOk(r.variety) && idOk(r.id) && customerIdOk(r.customerId)));
+  const badReservation = d.reservations.findIndex(r => !(isPlainObject(r) && varietyOk(r.variety) && idOk(r.id) && customerIdOk(r.customerId) && textOk(r, ["name", "variety", "month", "channel"]) && kgOk(r.kg) && statusOk(r.status)));
   if (badReservation !== -1) {
     return { error: `予約のデータが正しくありません（${badReservation + 1}件目）` };
   }
-  const badShipment = d.shipments.findIndex(s => !(isPlainObject(s) && varietyOk(s.variety) && idOk(s.id) && customerIdOk(s.customerId) && idOk(s.reservationId)));
+  const badShipment = d.shipments.findIndex(s => !(isPlainObject(s) && varietyOk(s.variety) && idOk(s.id) && customerIdOk(s.customerId) && idOk(s.reservationId) && textOk(s, ["name", "variety", "date", "memo"]) && kgOk(s.kg)));
   if (badShipment !== -1) {
     return { error: `出荷のデータが正しくありません（${badShipment + 1}件目）` };
   }
-  const badCustomer = d.customers.findIndex(c => !(isPlainObject(c) && typeof c.name === "string" && customerIdOk(c.customerId)));
+  const badCustomer = d.customers.findIndex(c => !(isPlainObject(c) && typeof c.name === "string" && customerIdOk(c.customerId) && textOk(c, ["name", "furigana", "phone", "address", "memo"])));
   if (badCustomer !== -1) {
     return { error: `顧客のデータが正しくありません（${badCustomer + 1}件目）` };
   }
@@ -3194,6 +3273,10 @@ function validateBackup(obj) {
   }
   if (d.prices !== undefined && !isPlainObject(d.prices)) {
     return { error: "単価のデータが正しくありません" };
+  }
+  const tooBig = x => varieties.some(v => Number((x || {})[v]) > LIMITS.stockOrPrice);
+  if (tooBig(d.inventory) || tooBig(d.prices)) {
+    return { error: "在庫か単価に、大きすぎる数が入っています" };
   }
   return { data: { reservations: d.reservations, shipments: d.shipments, customers: d.customers, inventory: d.inventory, prices: d.prices || {} } };
 }
@@ -3340,7 +3423,7 @@ document.getElementById("shipmentName").onchange = () => {
 document.getElementById("shipmentReservation").onchange = syncShipmentVarietyWithReservation;
 setupCustomerPickers();
 document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView(e.dataset.view));
-OLD_SHEET_KEYS.forEach(k => {
+[...OLD_SHEET_KEYS, ...OLD_LOCAL_DATA_KEYS].forEach(k => {
   try {
     localStorage.removeItem(k);
   } catch {
@@ -3349,4 +3432,22 @@ OLD_SHEET_KEYS.forEach(k => {
 });
 refreshAll();
 document.getElementById("loginForm").addEventListener("submit", submitLogin);
+
+// ボタンを押したときの処理。index.html には処理を直接書かず（onclick="…" を使わず）、data-action の名前でここから呼ぶ
+// （ページの中に書かれたスクリプトを動かさない決まり（Content-Security-Policy）を使えるようにして、
+//   万一、細工した文字が画面に入っても、スクリプトとして動かないようにするため）
+const PAGE_ACTIONS = {
+  addReservation, addShipment, cancelCustomerEdit, cancelEdit, cancelShipmentEdit,
+  exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
+  logout, printCurrentList, retryCloud, saveCustomer,
+  setStockMode: mode => setStockMode(mode),
+  openImportFile: () => document.getElementById("importFile").click(),
+  reloadPage: () => location.reload()
+};
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-action]");
+  if (!el || !Object.prototype.hasOwnProperty.call(PAGE_ACTIONS, el.dataset.action)) return;
+  PAGE_ACTIONS[el.dataset.action](el.dataset.arg);
+});
+document.getElementById("importFile").addEventListener("change", importBackup);
 startCloud();

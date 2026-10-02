@@ -876,6 +876,20 @@ small {
   min-width: 160px;
 }
 
+.backup-remind {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-left: 4px solid #e1a100;
+  border-radius: 6px;
+  background: #fff6dc;
+  color: #6b4b00;
+  font-weight: bold;
+}
+
+.backup-remind[hidden] {
+  display: none;
+}
+
 .backup-note {
   margin: 12px 0 0;
   font-size: 14px;

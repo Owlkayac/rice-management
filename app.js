@@ -59,7 +59,7 @@ const STOCK_MODE_KEY = "stockMode";
 const STOCK_MODES = {
   shipped: {
     basis: "出荷後",
-    help: "出荷済みの分を引いた残りで判定します。実際に手元へ残っているお米の量を確かめるときに向いています。"
+    help: "出荷を登録した分を引いた残りで判定します。実際に手元へ残っているお米の量を確かめるときに向いています。"
   },
   reserved: {
     basis: "予約後",
@@ -149,16 +149,46 @@ function storeItem(k, text) {
   localStorage.setItem(k, text);
 }
 
-function notify(message, type = "info", duration = 5000) {
+// action を渡すと、知らせの中にボタンを付ける（{ label：ボタンの文字, run：押したときの処理 }）
+function notify(message, type = "info", duration = 5000, action = null) {
   const area = document.getElementById("toastArea");
   if (!area) return;
-  while (area.children.length >= 4) area.firstChild.remove();
+  // 多すぎるときは古いものから消す。「保存しました」を先に、「元に戻す」などのボタン付きの知らせを最後に消す
+  while (area.children.length >= 4) (area.querySelector(".toast-success") || area.querySelector(".toast:not(.toast-has-action)") || area.firstChild).remove();
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = message;
-  el.onclick = () => el.remove();
+  // ボタン付きの知らせは、文字に指が触れただけでは消さない（ボタンを押す前に消えて、戻せなくならないように）
+  if (!action) el.onclick = () => el.remove();
+  if (action) {
+    el.classList.add("toast-has-action");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toast-action";
+    button.textContent = action.label;
+    // 押し下げたときに入力欄から選択が外れないようにする（外れると、スマホの表示では知らせの位置が下に動き、
+    // 指やマウスを離した場所にボタンが無くなって、押せないことがあるため）
+    button.addEventListener("mousedown", e => e.preventDefault());
+    button.onclick = () => {
+      // 処理が止まったとき（false を返したとき）は、知らせを残して、もう一度押せるようにする
+      if (action.run() !== false) el.remove();
+    };
+    el.appendChild(button);
+  }
   area.appendChild(el);
   setTimeout(() => el.remove(), duration);
+}
+
+// Supabase への送信がエラーなく終わったときに出す知らせ（noticeAfterSave で立てる）。
+// 画面の下のほうで操作していても、保存できたかが分かるようにするため（上の「保存済み」の表示は、スクロールすると見えない）
+// 送信中に続けて保存したときも、どれも知らせるよう、たまった分をすべて持つ
+let pendingSaveNotices = [];
+
+// 直前の保存が Supabase に届いたら、message を知らせる（送れなかったときは出さない。赤い枠とお知らせが代わりに出る）。
+// 保存（save）を呼んだあとに呼ぶこと。送信が予約されていないときは何も出さない（送っていないのに「保存しました」と出さないため）
+function noticeAfterSave(message) {
+  if (!cloudReady) return;
+  if (cloudSaving || cloudSaveQueued) pendingSaveNotices.push(message);
 }
 
 let lastSaveWarningAt = 0;
@@ -541,6 +571,7 @@ function fillOptions() {
     const e = document.getElementById(id);
     e.innerHTML = varieties.map(v => `<option>${v}</option>`).join("");
   });
+  document.getElementById("shipmentFilterVariety").innerHTML = '<option value="">すべて</option>' + varieties.map(v => `<option value="${v}">${varietyLabel(v)}</option>`).join("") + '<option value="__none">品種なし</option>';
   document.getElementById("filterVariety").innerHTML = '<option value="">すべて</option>' + varieties.map(v => `<option>${v}</option>`).join("");
   document.getElementById("month").innerHTML = months.map(m => `<option>${m}</option>`).join("");
   document.getElementById("filterMonth").innerHTML = '<option value="">すべて</option>' + months.map(m => `<option>${m}</option>`).join("");
@@ -899,6 +930,17 @@ function recentCustomers(limit) {
     }
     return list;
   });
+}
+
+// 一覧の検索欄の文字が、texts（名前・ふりがな・住所など）か phones（電話番号）に入っているか。
+// 顧客を探す入力欄と同じく、全角・半角、カタカナ・ひらがな、空白の違いは見ない。電話番号は、ハイフンなどを除いた数字で比べる
+function listSearchMatches(query, texts, phones) {
+  const q = searchKey(query);
+  if (!q) return true;
+  if (texts.some(t => searchKey(t).includes(q))) return true;
+  if (!isPhoneQuery(query)) return false;
+  const qDigits = digitsOnly(query);
+  return phones.some(p => digitsOnly(p).includes(qDigits));
 }
 
 // 入れた文字に合う顧客。名前・ふりがなの一部、または電話番号の一部で探す。
@@ -1300,6 +1342,7 @@ function commitReservation(r) {
   } else {
     save("reservations", reservations);
   }
+  noticeAfterSave(`予約を保存しました（${ownerName}・${varietyLabel(r.variety)}・${monthLabel(r.month)}・${formatKg(r.kg)}）`);
   if (moved.length) notify(`紐づいている出荷${moved.length}件の顧客も「${owner ? owner.name : r.name}」に変えました`, "info", 8000);
   clearReservation();
   refreshAll();
@@ -1408,10 +1451,11 @@ function deleteReservation(i) {
     if (index === -1) return;
     // 念のための再確認（今は、確認中に別のタブで変わった場合は confirmThen が先に止める）
     if (blockDeleteIfLinked(targetId)) return;
-    reservations.splice(index, 1);
+    const [removed] = reservations.splice(index, 1);
     if (targetId === editingReservationId) cancelEdit();
     save("reservations", reservations);
     refreshAll();
+    offerUndoDelete("reservation", removed, index, `${customerName(removed)}・${varietyLabel(removed.variety)}・${monthLabel(removed.month)}・${formatKg(removed.kg)}`);
   });
 }
 
@@ -1524,8 +1568,12 @@ function reservationMatchesFilters(r) {
   const fv = document.getElementById("filterVariety").value;
   const fm = document.getElementById("filterMonth").value;
   const fc = document.getElementById("filterChannel").value;
-  // 名前：顧客名か、予約に書いた名前に、検索の文字が入っているか
-  if (q && !customerName(r).includes(q) && !(r.name || "").includes(q)) return false;
+  // 顧客名・予約に書いた名前・顧客のふりがな・顧客の電話番号のどれかに、検索の文字が入っているか
+  if (q) {
+    const c = customerFor(r);
+    // 電話番号は、文字のまま（2けた以下やハイフン入りでも）と、数字だけの両方で比べる（顧客一覧と同じ）
+    if (!listSearchMatches(q, [c?.name, r.name, c?.furigana, c?.phone], [c?.phone])) return false;
+  }
   if (fv && r.variety !== fv) return false;
   if (fm && r.month !== fm) return false;
   // 受付経路：「未設定」（__none）は、経路が空の予約
@@ -1559,10 +1607,18 @@ function hiddenReservationLabel() {
 // 追加・編集した予約が、今の絞り込みでは一覧に出ないときに知らせる
 // （一覧で見つからないと「登録できなかった」と思い、もう一度登録して同じ予約が2件になるのを防ぐため）
 function notifyIfReservationHidden(r) {
+  // 検索や品種・月・受付経路の絞り込みに合わないとき
+  if (!withCustomerLookup(() => reservationMatchesFilters(r))) {
+    notify("この予約は、今の検索・絞り込みの条件に合わないため、一覧には出ません。検索欄や「絞り込み・並び順」の条件を消すと見られます。", "info", 10000);
+    return;
+  }
+  // 状態の絞り込みに合わないとき（一覧と同じ判定を使う）
   const fs = document.getElementById("filterStatus").value;
-  if (fs !== STATUS_FILTER_UNSHIPPED || !reservationMatchesFilters(r)) return;
-  if (withCustomerLookup(() => reservationIsUnshipped(r, unshippedContext()))) return;
-  notify("予約を保存しました。この予約は出荷を登録し終えた扱いのため、今の表示（未出荷だけ）では一覧に出ません。上の「すべて」を押すと見られます。", "info", 10000);
+  if (!fs) return;
+  if (withCustomerLookup(() => reservationMatchesStatus(r, fs, fs === STATUS_FILTER_UNSHIPPED ? unshippedContext() : null))) return;
+  notify(fs === STATUS_FILTER_UNSHIPPED
+    ? "この予約は出荷を登録し終えた扱いのため、今の表示（未出荷だけ）では一覧に出ません。上の「すべて」を押すと見られます。"
+    : "この予約は、今の状態の絞り込みに合わないため、一覧には出ません。上の「すべて」を押すと見られます。", "info", 10000);
 }
 
 // 予約を「出荷済み」にしたとき、「出荷済み以外」の表示で一覧から消えるので、消えた理由を知らせる
@@ -1773,6 +1829,7 @@ function displayInventory() {
       }
       inventory[v] = value;
       save(INVENTORY_STORAGE_KEY, inventory);
+      noticeAfterSave(`${v}の在庫量（${formatKg(value)}）を保存しました`);
       refreshAll();
     };
     tr.querySelector(".price-input").onchange = e => {
@@ -1788,6 +1845,7 @@ function displayInventory() {
       }
       prices[v] = value;
       save(PRICES_STORAGE_KEY, prices);
+      noticeAfterSave(`${v}の単価（${value.toLocaleString("ja-JP")}円/kg）を保存しました`);
       refreshAll();
     };
     tr.querySelector(".yield-input").onchange = e => {
@@ -1808,6 +1866,7 @@ function displayInventory() {
       }
       yields[v] = roundYield(e.target.value);
       save(YIELDS_STORAGE_KEY, yields);
+      noticeAfterSave(`${v}の歩留まり（${yields[v]}%）を保存しました`);
       refreshAll();
     };
     body.appendChild(tr);
@@ -1890,11 +1949,11 @@ function addShipment() {
     const next = proceed;
     proceed = () => confirmThen(`この出荷の品種を「${varietyLabel(original.variety)}」から「${varietyLabel(s.variety)}」に変えて保存しますか？${hint}`, next);
   }
-  // 編集で予約との紐づけが外れる・変わるときは、黙って外さずに確かめる（予約の「出荷済みの量」が変わるため）
+  // 編集で予約との紐づけが外れる・変わるときは、黙って外さずに確かめる（予約の出荷登録量が変わるため）
   if (original && original.reservationId && original.reservationId !== s.reservationId) {
     const next = proceed;
     const message = reservations.some(x => x.id === original.reservationId)
-      ? `${reservationLinkText(original.reservationId)}\n\nこの出荷と予約との紐づけが${s.reservationId ? "別の予約に変わります" : "外れます"}。その予約の「出荷済みの量」から、この出荷の分が減ります。このまま保存しますか？`
+      ? `${reservationLinkText(original.reservationId)}\n\nこの出荷と予約との紐づけが${s.reservationId ? "別の予約に変わります" : "外れます"}。その予約の出荷登録量から、この出荷の分が減ります。このまま保存しますか？`
       : "この出荷が紐づいていた予約は見つかりません（削除された可能性があります）。見つからない予約との紐づけを外して保存しますか？";
     proceed = () => confirmThen(message, next);
   }
@@ -1950,6 +2009,7 @@ function commitShipment(s) {
   } else {
     save(SHIPMENTS_STORAGE_KEY, shipments);
   }
+  noticeAfterSave(`出荷を保存しました（${customerName(s)}・${varietyLabel(s.variety)}・${s.date}・${formatKg(s.kg)}）`);
   if (s.reservationId) {
     const linked = reservations.find(x => x.id === s.reservationId);
     if (linked && statusOf(linked) !== "shipped" && remainingForReservation(linked) <= 0) {
@@ -1967,6 +2027,7 @@ function commitShipment(s) {
   // 同じ顧客の出荷を続けて登録しやすいように、顧客の選択は残す
   clearShipmentForm(s.customerId);
   refreshAll();
+  notifyIfShipmentHidden(s);
 }
 
 function editShipment(i) {
@@ -2020,25 +2081,76 @@ function deleteShipment(i) {
   confirmThen("この出荷データを削除しますか？", () => {
     const index = shipments.findIndex(x => x.id === targetId);
     if (index === -1) return;
-    shipments.splice(index, 1);
+    const [removed] = shipments.splice(index, 1);
     if (targetId === editingShipmentId) cancelShipmentEdit();
     save(SHIPMENTS_STORAGE_KEY, shipments);
     refreshAll();
+    offerUndoDelete("shipment", removed, index, `${customerName(removed)}・${varietyLabel(removed.variety)}・${removed.date || "日付なし"}・${formatKg(removed.kg)}`);
   });
+}
+
+// 出荷日（「2026-10-01」）の年月（「2026-10」）。形が違えば ""
+function shipmentMonthKey(s) {
+  const m = /^(\d{4}-\d{2})-\d{2}$/.exec(String(s.date || ""));
+  return m ? m[1] : "";
+}
+
+// 出荷一覧の「出荷した年月」の選択肢を、出荷のある年月（新しい順）で作り直す（選んでいる年月は、出荷が無くなっても残す）
+function refreshShipmentMonthOptions() {
+  const select = document.getElementById("shipmentFilterMonth");
+  const current = select.value;
+  const keys = new Set(shipments.map(shipmentMonthKey).filter(Boolean));
+  if (current) keys.add(current);
+  const label = k => `${k.slice(0, 4)}年${Number(k.slice(5, 7))}月`;
+  const html = '<option value="">すべて</option>' + [...keys].sort().reverse().map(k => `<option value="${esc(k)}">${esc(label(k))}</option>`).join("");
+  // 中身が変わったときだけ作り直す（iPhone で選択肢を開いている間に作り直すと、一覧が閉じることがあるため）
+  if (select.dataset.optionsHtml === html) return;
+  select.dataset.optionsHtml = html;
+  select.innerHTML = html;
+  select.value = current;
+}
+
+// 出荷一覧の検索・品種・年月の条件に合うか
+function shipmentMatchesFilters(s) {
+  const q = document.getElementById("shipmentSearch").value.trim();
+  const fv = document.getElementById("shipmentFilterVariety").value;
+  const fm = document.getElementById("shipmentFilterMonth").value;
+  // 「品種なし」（__none）は、品種が入っていない出荷
+  if (fv && (fv === "__none" ? !!s.variety : s.variety !== fv)) return false;
+  if (fm && shipmentMonthKey(s) !== fm) return false;
+  if (q) {
+    const c = customerFor(s);
+    // 電話番号は、文字のまま（2けた以下やハイフン入りでも）と、数字だけの両方で比べる（予約一覧と同じ）
+    if (!listSearchMatches(q, [c?.name, s.name, c?.furigana, c?.phone, s.memo], [c?.phone])) return false;
+  }
+  return true;
+}
+
+// 出荷一覧で、検索・絞り込みを使っているか
+function shipmentFiltersActive() {
+  return ["shipmentSearch", "shipmentFilterVariety", "shipmentFilterMonth"].some(id => document.getElementById(id).value.trim());
 }
 
 function getVisibleShipments() {
   const mode = document.getElementById("shipmentSort").value;
-  return shipments.map((s, i) => ({ s, i })).sort(shipmentComparator(mode));
+  return shipments.map((s, i) => ({ s, i })).filter(({ s }) => shipmentMatchesFilters(s)).sort(shipmentComparator(mode));
+}
+
+// 保存した出荷が、今の検索・絞り込みでは一覧に出ないときに知らせる（見つからずに、もう一度登録しないように）
+function notifyIfShipmentHidden(s) {
+  if (withCustomerLookup(() => shipmentMatchesFilters(s))) return;
+  notify("この出荷は、今の検索・絞り込みの条件に合わないため、出荷一覧には出ません。検索欄や品種・年月の条件を消すと見られます。", "info", 10000);
 }
 
 function displayShipments() {
   displayVarietyMismatches();
   const b = document.getElementById("shipmentList");
   b.innerHTML = "";
+  refreshShipmentMonthOptions();
   const visible = getVisibleShipments();
   const shown = limitRows(visible, "shipments");
-  showListMore("shipments", shown.length, visible.length, "");
+  const hidden = shipments.length - visible.length;
+  showListMore("shipments", shown.length, visible.length, hidden ? `検索・絞り込みの条件に合わない出荷${hidden}件は隠しています。` : "");
   shown.forEach(({ s, i }) => {
     const tr = document.createElement("tr");
     [s.date, varietyLabel(s.variety), customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
@@ -2056,7 +2168,7 @@ function displayShipments() {
     b.appendChild(tr);
   });
   if (!b.children.length) {
-    b.innerHTML = '<tr><td colspan="6" class="empty-message">まだ出荷の記録がありません</td></tr>';
+    b.innerHTML = `<tr><td colspan="6" class="empty-message">${shipments.length ? "条件に合う出荷がありません" : "まだ出荷の記録がありません"}</td></tr>`;
   }
   const r = getReservedTotals();
   const s = getShippedTotals();
@@ -2126,8 +2238,12 @@ function customerStats(c, groups) {
   const reserved = sumKg(rs);
   const shipped = sumKg(ss);
   const { remaining, over, items, overItems } = unshippedByVariety(rs, ss);
+  // 最後の出荷日（「2026-10-01」の形の出荷日のうち、今日までで、いちばん新しいもの。無ければ ""）。
+  // 先の日付で入れた出荷は数えない（まだ届いていないのに、最近買った人に見えないように）
+  const today = todayString();
+  const lastShip = ss.reduce((last, s) => (shipmentMonthKey(s) && s.date <= today && s.date > last ? s.date : last), "");
   return {
-    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items, overItems
+    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items, overItems, lastShip
   };
 }
 
@@ -2137,15 +2253,25 @@ function getVisibleCustomers() {
   const groups = groupItemsByCustomer();
   // 先に検索で絞ってから、残った顧客だけを集計する
   const arr = customers.map((c, i) => ({ c, originalIndex: i }))
-    .filter(({ c }) => [c.name, c.phone, c.address].join(" ").includes(q))
+    // 電話番号は、文字のまま（2けた以下やハイフン入りでも）と、数字だけの両方で比べる
+    .filter(({ c }) => listSearchMatches(q, [c.name, c.furigana, c.phone, c.address], [c.phone]))
     .map(x => ({ ...x, s: customerStats(x.c, groups) }));
+  // ふりがな（無ければ名前）の順
+  const byReading = (a, b) => jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || ""));
   arr.sort((a, b) => {
     if (sort === "recent") {
       // 「新しい順（登録）」：あとから登録した顧客を上に
       return b.originalIndex - a.originalIndex;
     }
+    if (sort === "lastShipment") {
+      // 「最後の出荷日が古い順」：しばらく買っていない人を上に。出荷の無い人は最後に
+      const noShipA = a.s.lastShip ? 0 : 1;
+      const noShipB = b.s.lastShip ? 0 : 1;
+      if (noShipA !== noShipB) return noShipA - noShipB;
+      return a.s.lastShip.localeCompare(b.s.lastShip) || byReading(a, b);
+    }
     if (sort === "reservations") {
-      return b.s.reserved - a.s.reserved || jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || ""));
+      return b.s.reserved - a.s.reserved || byReading(a, b);
     }
     return jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || "")) || jaCompare(String(a.c.name || ""), String(b.c.name || ""));
   });
@@ -2158,7 +2284,7 @@ function displayCustomers() {
   showListMore("customers", arr.length, visible.length, "");
   // 同じ名前の人を番号で見分けているときは、予約・出荷の顧客の欄と同じ番号を付ける（電話・住所は一覧の別の欄にあるので添えない）
   const names = customerDisplayNames();
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷登録量">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td data-label="最後の出荷日">${esc(s.lastShip) || "—"}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
   // ボタンの処理は onclick 属性に顧客の id を書き込まず、ここで結びつける
   // （読み込んだバックアップの id に細工があっても、スクリプトとして動かないようにするため）
   const rows = document.getElementById("customerList").querySelectorAll("tr");
@@ -2511,10 +2637,71 @@ function deleteCustomer(id) {
     return;
   }
   confirmThen(`${c.name}を削除しますか？`, () => {
-    customers = customers.filter(x => x.customerId !== id);
+    const index = customers.findIndex(x => x.customerId === id);
+    if (index === -1) return;
+    const [removed] = customers.splice(index, 1);
     save(CUSTOMERS_STORAGE_KEY, customers);
     refreshAll();
+    offerUndoDelete("customer", removed, index, removed.name || "名前なし");
   });
+}
+
+// ---------- 削除を元に戻す ----------
+
+// 「元に戻す」を押せる時間（ミリ秒）
+const UNDO_DELETE_MS = 10000;
+
+// 種類ごとの、データの一覧・保存の名前・番号の取り出し方
+const UNDO_KINDS = {
+  reservation: { label: "予約", key: "reservations", list: () => reservations, idOf: x => x.id },
+  shipment: { label: "出荷", key: SHIPMENTS_STORAGE_KEY, list: () => shipments, idOf: x => x.id },
+  customer: { label: "顧客", key: CUSTOMERS_STORAGE_KEY, list: () => customers, idOf: x => x.customerId }
+};
+
+// 削除したあとに、しばらく「元に戻す」ボタン付きの知らせを出す。
+// 消すのは1行だけ（予約・出荷が付いた顧客や、出荷が紐づいた予約は消せない）なので、戻すときは同じ番号の行を足し直せばよい
+function offerUndoDelete(kind, item, index, text) {
+  const { label } = UNDO_KINDS[kind];
+  notify(`${label}を削除しました（${text}）`, "info", UNDO_DELETE_MS, { label: "元に戻す", run: () => undoDelete(kind, item, index, text) });
+}
+
+// 削除した行を元に戻す。戻せないときは理由を知らせて false を返す
+function undoDelete(kind, item, index, text) {
+  if (!ensureFresh()) {
+    if (cloudSaveError) notify(`保存できたあとで、この知らせが消えていたら、${UNDO_KINDS[kind].label}（${text}）を手で入れ直してください。`, "warn", 12000);
+    return false;
+  }
+  const { label, key, list, idOf } = UNDO_KINDS[kind];
+  const rows = list();
+  // 別の画面で、同じ番号の行がもう戻されているとき
+  if (rows.some(x => idOf(x) === idOf(item))) {
+    notify(`この${label}は、今も一覧にあります（すでに戻っているか、削除が保存されなかったため）。`, "info", 8000);
+    return true;
+  }
+  // 持ち主の顧客や、紐づけていた予約が、その後に消されていたら戻さない（つながり先の無いデータを作らないため）
+  if (kind !== "customer" && item.customerId && !findCustomer(item.customerId)) {
+    notify(`この${label}の顧客が、その後に削除されたため、元に戻せません。`, "warn", 8000);
+    return true;
+  }
+  if (kind === "shipment" && item.reservationId) {
+    const linked = reservations.find(r => r.id === item.reservationId);
+    if (!linked) {
+      notify("この出荷を紐づけていた予約が、その後に削除されたため、元に戻せません。", "warn", 8000);
+      return true;
+    }
+    // 予約の顧客や品種が、その後に変わっていたら戻さない（別の人の予約や、違う品種の予約に出荷が紐づかないように）
+    if (customerKey(linked) !== customerKey(item) || !sameVariety(linked.variety, item.variety)) {
+      notify("この出荷を紐づけていた予約の顧客か品種が、その後に変わったため、元に戻せません。必要なら、出荷を入れ直してください。", "warn", 10000);
+      return true;
+    }
+  }
+  // 元の位置に戻す（読み直すと、登録した日時の順に並ぶ）
+  rows.splice(Math.min(index, rows.length), 0, item);
+  save(key, rows);
+  refreshAll();
+  noticeAfterSave(`${label}を元に戻しました（${text}）`);
+  if (kind === "reservation") notifyIfReservationHidden(item);
+  return true;
 }
 
 function editCustomer(id) {
@@ -2536,13 +2723,20 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name + customerDisplayNames().get(c.customerId).number)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name + customerDisplayNames().get(c.customerId).number)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷登録量：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div>${shipmentHistoryHtml(s.ss)}<div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
   // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
   d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
   d.querySelector(".detail-close-button").onclick = () => d.hidden = true;
   const mergeButton = d.querySelector(".merge-button");
   if (mergeButton) mergeButton.onclick = () => mergeCustomer(c.customerId, document.getElementById("mergeTarget").value);
   d.scrollIntoView({ behavior: "smooth" });
+}
+
+// 顧客の詳細に出す、出荷の履歴（出荷日の新しい順）
+function shipmentHistoryHtml(ss) {
+  const sorted = [...ss].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  const rows = sorted.map(s => `<tr><td data-label="出荷日">${esc(s.date) || "日付なし"}</td><td data-label="品種">${esc(varietyLabel(s.variety))}</td><td data-label="kg">${formatKg(s.kg)}</td><td data-label="メモ">${esc(s.memo)}</td></tr>`).join("");
+  return `<div class="detail-card shipment-history"><h3>出荷の履歴（${ss.length}件）</h3>${rows ? `<div class="table-wrapper"><table class="card-table"><thead><tr><th>出荷日</th><th>品種</th><th>kg</th><th>メモ</th></tr></thead><tbody>${rows}</tbody></table></div>` : "<p>まだ出荷の記録がありません</p>"}</div>`;
 }
 
 // 顧客の詳細に出す「ほかの顧客とまとめる」欄。同じ人を2人分登録してしまったときに使う。
@@ -3316,9 +3510,12 @@ function scheduleCloudSave() {
 }
 
 async function runCloudSave() {
+  let saved = false;
   try {
     while (cloudSaveQueued) {
       cloudSaveQueued = false;
+      // 前の回の送信が届いていても、この回で失敗したら「保存できた」とは知らせない
+      saved = false;
       // 送る前に、コードまで済ませたログインかを確かめる（aal2 でないと、更新・削除が0行で終わり、
       // 「ほかの人が変えた」という的外れな案内になるため）
       const error = await checkCloudAal2() || await sendCloudChanges();
@@ -3337,13 +3534,20 @@ async function runCloudSave() {
         break;
       }
       cloudSaveError = null;
+      // 送信中に次の保存が来ていたら、もう1回送る。その回まで成功したときだけ「保存できた」とする
+      saved = !cloudSaveQueued;
     }
   } catch (err) {
+    saved = false;
     cloudSaveQueued = true;
     cloudSaveError = { message: String((err && err.message) || err), code: "" };
   } finally {
     cloudSaving = false;
     showCloudStatus();
+    // 送れなかった・ぶつかったときは、保存できたとは知らせない
+    const messages = pendingSaveNotices;
+    pendingSaveNotices = [];
+    if (saved && messages.length) notify(messages.length === 1 ? messages[0] : `${messages.length}件の変更を保存しました。\n${messages.map(m => `・${m}`).join("\n")}`, "success", messages.length === 1 ? 5000 : 8000);
   }
 }
 
@@ -3717,6 +3921,8 @@ async function submitLogin(event) {
   }
   passwordInput.value = "";
   hideLoginScreen();
+  // ログインし直したので、操作した時刻を今にする（前の古い時刻で、すぐにロックしないように）
+  writeStoredActivity(Date.now());
   afterSignIn(data.email);
 }
 
@@ -4063,8 +4269,15 @@ async function startCloud() {
   }
   if (!data) {
     showLoginStage("password", "");
+    const locked = takeAutoLockNotice();
+    if (locked) setLoginMessage(`30分間操作がなかったため、自動でログアウトしました（顧客の情報を守るため）。もう一度ログインしてください。${locked === "editing" ? "\n入力の途中だった内容は、保存されていません。" : ""}`, false);
     return;
   }
+  takeAutoLockNotice();
+  // 前の操作から時間がたっていれば、データを読み込む前にログアウトする（開き直したページで、ログイン画面が出る）
+  if (await lockIfIdleAtStart()) return;
+  // ここから使い始めるので、操作した時刻を今にする
+  writeStoredActivity(Date.now());
   afterSignIn(data.email);
 }
 
@@ -4074,6 +4287,112 @@ async function logout() {
   await signOutSupabase();
   // 画面のデータを残さないよう、ページを開き直す（ログイン画面が出る）
   location.reload();
+}
+
+// ---------- しばらく操作しないときの自動ロック ----------
+// スマホをなくしたときなどに、顧客の住所・電話番号が見えたままにならないよう、
+// 操作しないまま決めた時間がたったらログアウトする（戻るときは、パスワードと認証アプリのコードを入れ直す）
+
+const AUTO_LOCK_MS = 30 * 60 * 1000;
+const AUTO_LOCK_NOTICE_KEY = "autoLocked";
+// 最後に操作した時刻（すべてのタブと、開き直したあとでも分かるよう、この端末のブラウザに残す。顧客のデータではない）
+const LAST_ACTIVITY_STORAGE_KEY = "lastActivityAt";
+// 書き込みは、多くてもこの間隔に1回にする
+const ACTIVITY_WRITE_MS = 15 * 1000;
+let lastActivityAt = Date.now();
+let lastActivityWrittenAt = 0;
+
+function readStoredActivity() {
+  try {
+    const n = Number(localStorage.getItem(LAST_ACTIVITY_STORAGE_KEY));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredActivity(time) {
+  try {
+    localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(time));
+    lastActivityWrittenAt = time;
+  } catch {
+    // 残せないときは、このタブの中の時刻だけで判定する
+  }
+}
+
+function recordActivity() {
+  lastActivityAt = Date.now();
+  if (lastActivityAt - lastActivityWrittenAt >= ACTIVITY_WRITE_MS) writeStoredActivity(lastActivityAt);
+}
+
+["pointerdown", "keydown", "input", "wheel", "touchstart"].forEach(type => {
+  document.addEventListener(type, recordActivity, { capture: true, passive: true });
+});
+
+// どのタブの操作でもよいので、いちばん新しい操作からの時間
+function idleMs() {
+  return Date.now() - Math.max(lastActivityAt, readStoredActivity());
+}
+
+// ログアウトして、ログイン画面を出す（画面のデータを残さないよう、ページを開き直す）。
+// ログアウトに失敗したら、開き直さずに知らせる（ログインが残ったまま開き直すと、そのまま使えてしまうため）
+async function lockNow(wasEditing) {
+  cloudSigningOut = true;
+  try {
+    sessionStorage.setItem(AUTO_LOCK_NOTICE_KEY, wasEditing ? "editing" : "1");
+  } catch {
+    // 理由の知らせを出せないだけなので、そのままロックする
+  }
+  const { error } = await signOutSupabase();
+  if (error) {
+    cloudSigningOut = false;
+    notify(`自動でログアウトできませんでした。手で「ログアウト」を押してください。\n${cloudErrorText(error)}`, "error", 15000);
+    return false;
+  }
+  location.reload();
+  return true;
+}
+
+async function autoLockIfIdle() {
+  if (!cloudReady || cloudSigningOut) return;
+  if (idleMs() < AUTO_LOCK_MS) return;
+  // 保存できていない変更があるときは、ロックしない（ログアウトすると、その変更が消えるため）。
+  // 送り終えたら、次の確認でロックする。送れないままのときは、画面の上の赤い枠で知らせているが、ロックもされない
+  if (hasUnsentCloudChanges()) return;
+  await lockNow(userIsEditing());
+}
+
+// スマホでは、画面を消している間はタイマーが止まるので、画面に戻ったとき・「戻る」で戻ったときにも確かめる
+setInterval(autoLockIfIdle, 60 * 1000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") autoLockIfIdle();
+});
+window.addEventListener("pageshow", e => {
+  if (e.persisted) autoLockIfIdle();
+});
+
+// ページを開いたときに、ログインが残っていても、前の操作から決めた時間がたっていればログアウトする
+// （開き直すだけでロックを通り抜けないように。iPhone のホーム画面のアプリは、裏に回すと閉じられて開き直しになりやすい）。
+// 時刻が残っていない（初めて開いた）ときは、ロックしない
+async function lockIfIdleAtStart() {
+  const stored = readStoredActivity();
+  if (!stored || Date.now() - stored < AUTO_LOCK_MS) return false;
+  if (await lockNow(false)) return true;
+  // ログアウトできなかったときは、データを読み込まずに止める（時間がたった端末で、データを出さないため）
+  takeAutoLockNotice();
+  showCloudLoading("しばらく操作がなかったため、ログアウトしようとしましたが、できませんでした。「もう一度読み込む」を押してください。", true);
+  return true;
+}
+
+// 自動ロックのあとに開き直したときは、ログイン画面で理由を伝える（印は1回で消す）
+function takeAutoLockNotice() {
+  try {
+    const locked = sessionStorage.getItem(AUTO_LOCK_NOTICE_KEY);
+    sessionStorage.removeItem(AUTO_LOCK_NOTICE_KEY);
+    return locked;
+  } catch {
+    return null;
+  }
 }
 
 // ほかのタブでログアウトしたときや、ログインの期限が切れて延長できなかったときは、開き直してログイン画面を出す
@@ -4196,13 +4515,14 @@ function exportVisibleReservationsCsv() {
 }
 
 function exportShipmentsCsv() {
-  const rows = getVisibleShipments().map(({ s }) => [s.date, s.variety, customerName(s), roundKg(s.kg), s.memo || ""]);
+  const rows = withCustomerLookup(getVisibleShipments).map(({ s }) => [s.date, s.variety, customerName(s), roundKg(s.kg), s.memo || ""]);
   if (!rows.length) {
     notify("書き出す出荷がありません", "warn");
     return;
   }
   downloadCsv(`shipments-${dateStamp()}.csv`, ["出荷日", "品種", "顧客", "kg", "メモ"], rows);
-  notify(`出荷${rows.length}件をCSVに書き出しました（表示中の並び順のとおり）`, "success");
+  const hidden = shipments.length - rows.length;
+  notify(`出荷${rows.length}件をCSVに書き出しました（表示中の検索・絞り込み・並び順のとおり）${hidden ? `。条件に合わない出荷${hidden}件は入っていません` : ""}`, hidden ? "info" : "success", hidden ? 10000 : undefined);
 }
 
 function exportCustomersCsv() {
@@ -4242,7 +4562,18 @@ window.addEventListener("beforeprint", () => {
   const el = document.getElementById("printTitle");
   // 予約一覧で出荷済みを隠しているときは、紙にもそのことを残す
   const status = document.getElementById("filterStatus").value;
-  const filterNote = sub && sub.id === "reservationsView" ? { [STATUS_FILTER_UNSHIPPED]: "（未出荷だけ）", [STATUS_FILTER_ACTIVE]: "（状態が出荷済み以外）" }[status] || "" : "";
+  let filterNote = sub && sub.id === "reservationsView" ? { [STATUS_FILTER_UNSHIPPED]: "（未出荷だけ）", [STATUS_FILTER_ACTIVE]: "（状態が出荷済み以外）" }[status] || "" : "";
+  // 出荷一覧を絞り込んでいるときは、その条件も紙に残す（一部だけを印刷したと分かるように）
+  if (sub && sub.id === "shipmentsView" && shipmentFiltersActive()) {
+    const parts = [];
+    const q = document.getElementById("shipmentSearch").value.trim();
+    const v = document.getElementById("shipmentFilterVariety");
+    const m = document.getElementById("shipmentFilterMonth");
+    if (q) parts.push(`検索「${q}」`);
+    if (v.value) parts.push(`品種：${v.options[v.selectedIndex].text}`);
+    if (m.value) parts.push(m.options[m.selectedIndex].text);
+    filterNote = `（${parts.join("・")}）`;
+  }
   if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}${filterNote}｜${todayString().replace(/-/g, "/")}`;
 });
 
@@ -4271,6 +4602,32 @@ function timestampForFilename() {
 // バックアップ（「データを書き出す」）をすすめる間隔（日）
 const BACKUP_REMIND_DAYS = 7;
 
+// これだけの日数がたったら、赤で強く知らせる
+const BACKUP_URGENT_DAYS = 14;
+// 「この端末でバックアップを取る」の設定（この端末のブラウザにだけ保存する。true / false。未設定なら null）
+const BACKUP_DUTY_STORAGE_KEY = "backupDuty";
+
+// この端末でバックアップを取るか。未設定のときは、一度でも書き出した端末なら取る（前からの動きのまま）
+function isBackupDevice() {
+  const duty = read(BACKUP_DUTY_STORAGE_KEY, null);
+  if (typeof duty === "boolean") return duty;
+  return read(LAST_BACKUP_STORAGE_KEY, null) !== null;
+}
+
+function setBackupDevice(on) {
+  save(BACKUP_DUTY_STORAGE_KEY, !!on);
+  showBackupStatus();
+}
+
+// バックアップをすすめる文（すすめる時期でなければ null）。urgent：赤で強く知らせるか
+function backupReminder() {
+  if (!isBackupDevice()) return null;
+  const days = daysSinceBackup();
+  if (days === null) return { short: "この端末では、まだ一度もバックアップしていません。", urgent: true };
+  if (days < BACKUP_REMIND_DAYS) return null;
+  return { short: `前回のバックアップから${days}日たっています。`, urgent: days >= BACKUP_URGENT_DAYS };
+}
+
 // この端末で最後に書き出してから何日たったか（書き出したことが無ければ null）
 function daysSinceBackup() {
   const last = read(LAST_BACKUP_STORAGE_KEY, null);
@@ -4286,23 +4643,25 @@ function showBackupStatus() {
   const lastDate = last ? new Date(last) : null;
   const lastText = lastDate && !Number.isNaN(lastDate.getTime()) ? `最終バックアップ（この端末）：${lastDate.toLocaleString("ja-JP")}` : "この端末では、まだバックアップしていません";
   el.textContent = `現在のデータ：予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件　${lastText}`;
-  // バックアップを取る端末（一度でも書き出した端末）でだけ、決めた日数がたったら書き出しをすすめる
-  // （バックアップは、決めた1台の端末で取る決まりにしたため。ほかの端末で毎回知らせないように）
-  const days = daysSinceBackup();
-  const due = days !== null && days >= BACKUP_REMIND_DAYS;
+  // バックアップを取る端末でだけ、書き出しをすすめる（ほかの端末で毎回知らせないように）。
+  // まだ一度も書き出していない端末でも、「この端末でバックアップを取る」を入れていれば知らせる
+  document.getElementById("backupDevice").checked = isBackupDevice();
+  const due = backupReminder();
   const remind = document.getElementById("backupRemind");
   remind.hidden = !due;
-  remind.textContent = due ? `前回のバックアップから${days}日たっています。「データを書き出す」を押して、ファイルを保存してください。` : "";
-  // ホームにも1行で知らせる
-  document.getElementById("homeBackupRemind").hidden = !due;
-  document.getElementById("homeBackupRemindText").textContent = due ? `前回のバックアップから${days}日たっています。` : "";
+  remind.textContent = due ? `${due.short}「データを書き出す」を押して、ファイルを保存してください。` : "";
+  // ホームにも1行で知らせる（長くたっているときは赤）
+  const home = document.getElementById("homeBackupRemind");
+  home.hidden = !due;
+  [remind, home].forEach(el => el.classList.toggle("backup-remind-urgent", !!due && due.urgent));
+  document.getElementById("homeBackupRemindText").textContent = due ? due.short : "";
 }
 
 // 開いたときに、書き出しの時期が来ていれば一度だけ知らせる（バックアップを取る端末でだけ）
 function remindBackupOnce() {
-  const days = daysSinceBackup();
-  if (days === null || days < BACKUP_REMIND_DAYS) return;
-  notify(`前回のバックアップから${days}日たっています。「在庫・設定」の「データを書き出す」で、ファイルに保存してください。`, "warn", 12000);
+  const due = backupReminder();
+  if (!due) return;
+  notify(`${due.short}「在庫・設定」の「データを書き出す」で、ファイルに保存してください。`, due.urgent ? "error" : "warn", 12000);
 }
 
 // 今のデータからバックアップを作る（ファイルへの書き出しに使う）
@@ -4513,6 +4872,10 @@ document.getElementById("reservationSort").addEventListener("change", e => {
   save(RESERVATION_SORT_KEY, e.target.value);
   refreshAll();
 });
+["shipmentSearch", "shipmentFilterVariety", "shipmentFilterMonth"].forEach(id => document.getElementById(id).addEventListener("input", () => {
+  resetListLimit("shipments");
+  refreshAll();
+}));
 document.getElementById("shipmentSort").addEventListener("change", e => {
   resetListLimit("shipments");
   save(SHIPMENT_SORT_KEY, e.target.value);
@@ -4586,4 +4949,5 @@ document.addEventListener("click", e => {
   PAGE_ACTIONS[el.dataset.action](el.dataset.arg);
 });
 document.getElementById("importFile").addEventListener("change", importBackup);
+document.getElementById("backupDevice").addEventListener("change", e => setBackupDevice(e.target.checked));
 startCloud();

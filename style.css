@@ -136,18 +136,9 @@ h2 {
 
 .home-section h3 small {
   margin-left: 8px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: normal;
   color: var(--muted);
-}
-
-.home-pending {
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 14px;
 }
 
 .home-more {
@@ -182,7 +173,7 @@ h2 {
   display: block;
   margin-top: 4px;
   color: #b00020;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: bold;
 }
 
@@ -499,7 +490,7 @@ tbody tr:hover {
 .card-sub {
   display: block;
   margin-top: 4px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 /* 歩留まりの説明（Supabase の準備がまだのときの注意を、改行して出す） */
@@ -512,7 +503,7 @@ tbody tr:hover {
   display: block;
   margin-top: 4px;
   color: #8a5a00;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .over-shipped[hidden] {
@@ -657,13 +648,13 @@ tbody tr:hover {
 }
 
 .suggest-sub {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 
 .suggest-head {
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 
@@ -1023,12 +1014,12 @@ small {
 
 .mode-button small {
   display: block;
-  font-size: 13px;
+  font-size: 14px;
   color: inherit;
 }
 
 .inventory-table th small {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: normal;
 }
 
@@ -1076,6 +1067,25 @@ small {
 
 .toast-error {
   background: #b00020;
+}
+
+/* 知らせの中のボタン（「元に戻す」など） */
+.toast-action {
+  display: block;
+  margin-top: 8px;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 2px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .backup-panel {
@@ -1138,6 +1148,28 @@ small {
   font-weight: bold;
 }
 
+.backup-remind.backup-remind-urgent {
+  border-left-color: #b00020;
+  background: #fdecee;
+  color: #8a0019;
+}
+
+.backup-device {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  font-weight: bold;
+}
+
+.backup-device input {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  margin: 2px 0 0;
+  padding: 0;
+}
+
 .backup-remind[hidden] {
   display: none;
 }
@@ -1180,7 +1212,7 @@ small {
     min-width: 0;
     min-height: 54px;
     padding: 4px 2px;
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.3;
     white-space: normal;
     border-radius: 8px;
@@ -1464,7 +1496,7 @@ small {
 .cloud-status {
   margin: -8px 0 12px;
   text-align: center;
-  font-size: 13px;
+  font-size: 15px;
   color: var(--muted);
 }
 
@@ -1582,6 +1614,7 @@ small {
 
 .login-box .login-message {
   min-height: 1.6em;
+  white-space: pre-line;
   margin: 12px 0 0;
 }
 

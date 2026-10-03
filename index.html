@@ -7,11 +7,16 @@
          万一、細工した文字が画面に入っても、スクリプトとして動かず、ほかのサイトへデータを送れないようにするため。
          別の Supabase につなぐときは、connect-src の URL も supabase-config.js の Project URL に変えること。
          img-src の data: は、2段階認証の登録用のQRコード（Supabase から SVG の画像として届く）を出すため（<img> の SVG はスクリプトとして動かない） -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://aacfbxcbuesrfolmxltc.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src https://aacfbxcbuesrfolmxltc.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
     <!-- ほかのサイトへ移るときに、このページのアドレスを伝えない -->
     <meta name="referrer" content="no-referrer">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=35">
+    <!-- スマホのホーム画面に追加したときの名前・アイコン（ファイルの場所は、このページからの相対の場所で書く） -->
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="米予約">
+    <meta name="theme-color" content="#2f6b3b">
+    <link rel="stylesheet" href="style.css?v=36">
   </head>
   <body>
     <div class="container">
@@ -80,14 +85,6 @@
           <h3>品種ごとの残り在庫<small id="homeStockBasis"></small></h3>
           <div id="homeStock" class="home-stock"></div>
         </section>
-        <section class="home-section">
-          <h3>先に発送する人<small>入金済み・未出荷</small></h3>
-          <p class="home-pending">準備中です（入金の記録ができるようになったら、ここに出します）</p>
-        </section>
-        <section class="home-section">
-          <h3>入金待ち<small>出荷済み・未入金</small></h3>
-          <p class="home-pending">準備中です（入金の記録ができるようになったら、ここに出します）</p>
-        </section>
       </main>
 
       <main id="ordersView" class="view-panel" hidden>
@@ -141,8 +138,8 @@
             <button type="button" class="quick-filter" id="quickFilterAll" aria-pressed="false" data-action="quickStatusFilter" data-arg="">すべて</button>
           </div>
           <div class="filters collapsible-filters" id="reservationFilters">
-            <label for="searchName">名前で検索</label>
-            <input id="searchName" type="search" placeholder="名前の一部を入力">
+            <label for="searchName">名前・ふりがな・電話で検索</label>
+            <input id="searchName" type="search" placeholder="名前・ふりがな・電話番号の一部">
             <button type="button" class="filters-toggle tool-button" id="reservationFiltersToggle" aria-expanded="false" aria-controls="reservationFiltersMore" data-action="toggleFilters">絞り込み・並び順</button>
             <div class="filters-more" id="reservationFiltersMore">
               <label for="filterVariety">品種</label>
@@ -232,6 +229,12 @@
           <div id="varietyMismatchNotice" class="data-warning" role="status" hidden></div>
           <h2>出荷一覧</h2>
           <div class="filters">
+            <label for="shipmentSearch">顧客名・ふりがな・電話・メモで検索</label>
+            <input id="shipmentSearch" type="search" placeholder="顧客名・ふりがな・電話番号・メモの一部">
+            <label for="shipmentFilterVariety">品種</label>
+            <select id="shipmentFilterVariety"></select>
+            <label for="shipmentFilterMonth">出荷した年月</label>
+            <select id="shipmentFilterMonth"></select>
             <label for="shipmentSort">並び順</label>
             <select id="shipmentSort">
               <option value="recent">新しい順（登録）</option>
@@ -273,7 +276,7 @@
               <small id="dashboardShippable" class="card-sub"></small>
             </section>
             <section class="total-card shipment-card">
-              <p>総出荷量</p>
+              <p>総出荷登録量</p>
               <strong id="dashboardShipments">0kg</strong>
             </section>
             <section class="total-card remaining-card">
@@ -318,7 +321,7 @@
                   <th>在庫量(精米前)</th>
                   <th>出荷できる量</th>
                   <th>予約量</th>
-                  <th>出荷量</th>
+                  <th>出荷登録量</th>
                   <th>未出荷</th>
                 </tr>
               </thead>
@@ -394,13 +397,14 @@
             </div>
           </div>
           <div class="filters">
-            <label for="customerSearch">顧客名検索</label>
-            <input id="customerSearch" type="search">
+            <label for="customerSearch">名前・ふりがな・電話・住所で検索</label>
+            <input id="customerSearch" type="search" placeholder="名前・ふりがな・電話番号・住所の一部">
             <label for="customerSort">並び順</label>
             <select id="customerSort">
               <option value="name">顧客名</option>
               <option value="recent">新しい順（登録）</option>
               <option value="reservations">予約量順</option>
+              <option value="lastShipment">最後の出荷日が古い順（声かけ用）</option>
             </select>
           </div>
           <div class="list-tools">
@@ -416,8 +420,9 @@
                   <th>住所</th>
                   <th>メモ</th>
                   <th>予約合計</th>
-                  <th>出荷済み</th>
+                  <th>出荷登録量</th>
                   <th>未出荷</th>
+                  <th>最後の出荷日</th>
                   <th class="no-print">詳細</th>
                   <th class="no-print">編集</th>
                   <th class="no-print">削除</th>
@@ -501,6 +506,8 @@
           <h2>データのバックアップ</h2>
           <p id="backupStatus" class="backup-status"></p>
           <p id="backupRemind" class="backup-remind" hidden></p>
+          <label class="backup-device"><input type="checkbox" id="backupDevice"> この端末でバックアップを取る（入れると、7日ごとに書き出しをすすめます。まだ一度も書き出していなくても知らせます）</label>
+          <p class="section-help">この設定と「最終バックアップ」は、端末（ブラウザ）ごとに覚えます。iPhone では、Safari とホーム画面から開いたアプリが、別の端末として扱われることがあります。</p>
           <div class="backup-actions">
             <button type="button" id="exportBackupButton" data-action="exportBackup">データを書き出す</button>
             <button type="button" id="importBackupButton" class="cancel-button" data-action="openImportFile">データを読み込む</button>
@@ -580,6 +587,6 @@
     <script src="vendor/supabase-js-2.117.2.js"></script>
     <script src="supabase-config.js"></script>
     <script src="supabase-client.js?v=27"></script>
-    <script src="app.js?v=37"></script>
+    <script src="app.js?v=38"></script>
   </body>
 </html>

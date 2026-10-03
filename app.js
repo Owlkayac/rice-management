@@ -901,6 +901,17 @@ function recentCustomers(limit) {
   });
 }
 
+// 一覧の検索欄の文字が、texts（名前・ふりがな・住所など）か phones（電話番号）に入っているか。
+// 顧客を探す入力欄と同じく、全角・半角、カタカナ・ひらがな、空白の違いは見ない。電話番号は、ハイフンなどを除いた数字で比べる
+function listSearchMatches(query, texts, phones) {
+  const q = searchKey(query);
+  if (!q) return true;
+  if (texts.some(t => searchKey(t).includes(q))) return true;
+  if (!isPhoneQuery(query)) return false;
+  const qDigits = digitsOnly(query);
+  return phones.some(p => digitsOnly(p).includes(qDigits));
+}
+
 // 入れた文字に合う顧客。名前・ふりがなの一部、または電話番号の一部で探す。
 // 名前やふりがなが、入れた文字で始まる人を先に、あとは ふりがな（無ければ名前）の順に並べる
 function matchCustomers(query) {
@@ -1524,8 +1535,12 @@ function reservationMatchesFilters(r) {
   const fv = document.getElementById("filterVariety").value;
   const fm = document.getElementById("filterMonth").value;
   const fc = document.getElementById("filterChannel").value;
-  // 名前：顧客名か、予約に書いた名前に、検索の文字が入っているか
-  if (q && !customerName(r).includes(q) && !(r.name || "").includes(q)) return false;
+  // 顧客名・予約に書いた名前・顧客のふりがな・顧客の電話番号のどれかに、検索の文字が入っているか
+  if (q) {
+    const c = customerFor(r);
+    // 電話番号は、文字のまま（2けた以下やハイフン入りでも）と、数字だけの両方で比べる（顧客一覧と同じ）
+    if (!listSearchMatches(q, [c?.name, r.name, c?.furigana, c?.phone], [c?.phone])) return false;
+  }
   if (fv && r.variety !== fv) return false;
   if (fm && r.month !== fm) return false;
   // 受付経路：「未設定」（__none）は、経路が空の予約
@@ -2137,7 +2152,8 @@ function getVisibleCustomers() {
   const groups = groupItemsByCustomer();
   // 先に検索で絞ってから、残った顧客だけを集計する
   const arr = customers.map((c, i) => ({ c, originalIndex: i }))
-    .filter(({ c }) => [c.name, c.phone, c.address].join(" ").includes(q))
+    // 電話番号は、文字のまま（2けた以下やハイフン入りでも）と、数字だけの両方で比べる
+    .filter(({ c }) => listSearchMatches(q, [c.name, c.furigana, c.phone, c.address], [c.phone]))
     .map(x => ({ ...x, s: customerStats(x.c, groups) }));
   arr.sort((a, b) => {
     if (sort === "recent") {

@@ -141,8 +141,8 @@
             <button type="button" class="quick-filter" id="quickFilterAll" aria-pressed="false" data-action="quickStatusFilter" data-arg="">すべて</button>
           </div>
           <div class="filters collapsible-filters" id="reservationFilters">
-            <label for="searchName">名前で検索</label>
-            <input id="searchName" type="search" placeholder="名前の一部を入力">
+            <label for="searchName">名前・ふりがな・電話で検索</label>
+            <input id="searchName" type="search" placeholder="名前・ふりがな・電話番号の一部">
             <button type="button" class="filters-toggle tool-button" id="reservationFiltersToggle" aria-expanded="false" aria-controls="reservationFiltersMore" data-action="toggleFilters">絞り込み・並び順</button>
             <div class="filters-more" id="reservationFiltersMore">
               <label for="filterVariety">品種</label>
@@ -394,8 +394,8 @@
             </div>
           </div>
           <div class="filters">
-            <label for="customerSearch">顧客名検索</label>
-            <input id="customerSearch" type="search">
+            <label for="customerSearch">名前・ふりがな・電話・住所で検索</label>
+            <input id="customerSearch" type="search" placeholder="名前・ふりがな・電話番号・住所の一部">
             <label for="customerSort">並び順</label>
             <select id="customerSort">
               <option value="name">顧客名</option>

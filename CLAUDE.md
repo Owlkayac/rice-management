@@ -7,7 +7,15 @@
 - `app.js`：処理のすべて
 - `supabase-client.js`・`supabase-config.js`：Supabase への接続（Publishable key だけ。secret key・service_role key は書かない）
 - `vendor/`：外のサイトから読み込まないよう、リポジトリに置いた部品（supabase-js）
-- `supabase-*.sql`：Supabase の設定（ユーザーが SQL Editor で実行する。どれを実行してよいかは、下の「ユーザーにファイルを実行してもらうときのルール」の表を見る。`supabase-schema.sql` は実行させない）。`SECURITY.md`：セキュリティの対策と運用の手順
+- `supabase-*.sql`：Supabase の設定（ユーザーが SQL Editor で実行する。どれを実行してよいかは、下の「ユーザーにファイルを実行してもらうときのルール」の表を見る。`supabase-schema.sql` は実行させない）。`SECURITY.md`：セキュリティの対策と運用の手順。`SUPABASE_MFA.md`：2段階認証（認証アプリのコード）の使い方・運用の手順
+
+## 今の状態（2026年10月3日）
+
+- ログインには、パスワードに加えて、認証アプリの6桁のコード（2段階認証・TOTP）が必要。使う人は2人で、2人とも登録済み。
+- `supabase-auth.sql`（2段階認証を加えた版）は実行済み。データベース側の守り（`public.app_security` の `mfa_required`）は **true（入っている）**。コードを入れていないログインでは、4つのテーブルは読むと0行・追加はエラー・更新と削除は0行になる（実際に確かめた。`SUPABASE_MFA.md` の「8.」）。
+- `update public.app_security set mfa_required = false ...`（守りを外す）は、守りが弱くなる SQL。下の最後の決まりのとおり、何が変わるかを伝えて同意をもらってから案内し、直ったら true に戻してもらう。
+- 2段階認証の導入の手順（`SUPABASE_MFA.md` の「4.」）は済んだので、もう案内しない（新しい空の Supabase プロジェクトで最初から作り直すときだけ）。
+- アプリは、データベースの守りに関係なく、いつもコードを求める。アプリの変更で、コードの確認（aal2 の確認）を外したり、aal2 でないのにデータを読み込んだり保存したりする作りにしない。
 
 ## ユーザーにファイルを実行してもらうときのルール（必ず守る）
 

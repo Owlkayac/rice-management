@@ -294,6 +294,7 @@ async function getMfaState() {
 // 確認が済んでいない登録（status が unverified のもの）だけを消す。確認済みの登録は、消さない
 async function cleanupUnverifiedFactors() {
   const where = "確認が済んでいない登録の削除";
+  if (!supabaseClient) return setupFailure(where);
   const factors = await listMfaFactors();
   if (factors.error) return factors;
   try {

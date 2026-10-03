@@ -1620,6 +1620,11 @@ small {
   margin-bottom: 4px;
 }
 
+/* 登録の画面を出したときに見出しへ移す入力位置の枠線は出さない（入力欄ではないため） */
+#mfaEnrollTitle:focus {
+  outline: none;
+}
+
 .login-box select {
   width: 100%;
 }

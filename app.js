@@ -372,13 +372,13 @@ function shippedForReservation(r) {
 }
 
 function remainingForReservation(r) {
-  return (Number(r.kg) || 0) - shippedForReservation(r);
+  return unshippedKg(r.kg, shippedForReservation(r));
 }
 
 function openReservationsFor(customerId, excludeShipmentId) {
   return reservations.map((r, i) => ({ r, i })).filter(({ r }) => customerFor(r)?.customerId === customerId).map(({ r, i }) => ({
     r, i, shipped: shipments.reduce((a, s) => a + (s.reservationId === r.id && s.id !== excludeShipmentId ? Number(s.kg) || 0 : 0), 0)
-  })).map(x => ({ ...x, remaining: (Number(x.r.kg) || 0) - x.shipped }));
+  })).map(x => ({ ...x, remaining: unshippedKg(x.r.kg, x.shipped) }));
 }
 
 function refreshShipmentReservationOptions(selectedReservationId) {
@@ -3918,8 +3918,11 @@ async function cancelAddMfaFactor() {
   closeLoginOverlay();
   // 消し終わるまでは、次の「登録を追加」を受け付けない（新しく作った登録まで消さないため）
   mfaBusy = true;
+  setMfaPanelBusy(true);
   const { error } = await cleanupUnverifiedFactors();
   mfaBusy = false;
+  setMfaPanelBusy(false);
+  renderMfaPanel();
   if (error) notify(`途中の登録を消せませんでした（次に登録するときに消します）。\n${cloudErrorText(error)}`, "warn", 10000);
 }
 
@@ -3975,11 +3978,14 @@ async function renderMfaPanel() {
     button.dataset.action = "removeMfaFactorById";
     button.dataset.arg = f.id;
     // 最後の1つは消せない（消すと、データを読めなくなるため）
-    button.disabled = onlyOne;
+    // 削除などの処理中に一覧を作り直したときも、押せないようにする
+    button.disabled = onlyOne || mfaBusy;
     li.append(name, date, button);
     return li;
   }));
-  if (onlyOne) {
+  if (!verified.length) {
+    setMfaPanelNote("認証アプリの登録が0件です。このままでは、パスワードを知っている人が先に登録できてしまいます。すぐに「登録を追加」で登録してください。", true);
+  } else if (onlyOne) {
     setMfaPanelNote("スマホをなくすとログインできなくなります。「登録を追加」で、新しいQRコードを2台で読み取っておいてください。それができないときは、管理する人に頼み方を確かめておいてください。\n最後の登録は消せません。登録のやり直しが必要なときは、管理する人に頼んでください。", true);
   } else {
     setMfaPanelNote("どの登録のコードでもログインできます。使わなくなった端末の登録は、削除してください（新しい登録を追加してから、古い登録を消します）。", false);
@@ -4027,9 +4033,20 @@ async function removeMfaFactorChecked(factorId) {
   const removed = await removeMfaFactor(factorId);
   if (removed.error) {
     notify(`登録を削除できませんでした。\n${cloudErrorText(removed.error)}`, "error", 10000);
-  } else {
-    notify("登録を削除しました。", "success");
+    return;
   }
+  // ほかのタブや端末でも同時に削除して、確認済みの登録が0になっていないかを確かめる
+  // （0のままだと、次のログインで、パスワードを知っている人なら誰でも登録できてしまうため）
+  const after = await listMfaFactors();
+  if (after.error) {
+    notify("登録は削除しましたが、残りの登録を確かめられませんでした。ログイン設定で、登録が残っているか確かめてください。", "warn", 15000);
+    return;
+  }
+  if (after.data.verified.length === 0) {
+    alert("認証アプリの登録が0件になりました（ほかのタブや端末でも削除したためです）。\nこのままでは、パスワードを知っている人が先に登録できてしまいます。すぐに「登録を追加」で、登録し直してください。");
+    return;
+  }
+  notify("登録を削除しました。", "success");
 }
 
 // ページを開いたとき：ログインしていればデータを読み込み、していなければログイン画面を出す

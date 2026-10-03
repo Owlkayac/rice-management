@@ -37,6 +37,14 @@ const SHIPMENT_SORTS = ["recent", "dateDesc", "dateAsc", "name"];
 const CHANNELS = ["ウェブフォーム", "Instagram", "LINE", "電話・対面", "その他"];
 const STATUSES = { received: "受付済み", preparing: "出荷準備中", shipped: "出荷済み" };
 const STATUS_KEYS = ["received", "preparing", "shipped"];
+// 予約一覧の「状態」の絞り込みで、出荷済みを隠す選び方（はじめはこれを選んでおく）
+const STATUS_FILTER_ACTIVE = "active";
+// 一覧（予約・出荷・顧客）に一度に出す行の数。多いときは「もっと見る」で、この数ずつ増やす
+// （何千件も一度に表を作ると、スマホで表示や操作が遅くなるため。検索・絞り込み・CSV・合計は全件が対象）
+const LIST_PAGE_SIZE = 100;
+const listLimits = { reservations: LIST_PAGE_SIZE, shipments: LIST_PAGE_SIZE, customers: LIST_PAGE_SIZE };
+// 印刷している間は、区切らずに全部の行を出す
+let printingAllRows = false;
 const PRICES_STORAGE_KEY = "varietyPrices";
 // 品種ごとの歩留まり率（%）。在庫量は精米する前の量なので、精米で減る分（米粉になる分など）を引いて「出荷できる量」を出す
 const YIELDS_STORAGE_KEY = "varietyYields";
@@ -455,7 +463,8 @@ function reservationComparator(mode) {
   if (mode === "variety") return (a, b) => byVariety(a, b) || byMonth(a, b) || byIndex(a, b);
   if (mode === "name") return (a, b) => customerSortKey(a.r).localeCompare(customerSortKey(b.r), "ja") || byMonth(a, b) || byIndex(a, b);
   if (mode === "kg") return (a, b) => (Number(b.r.kg) || 0) - (Number(a.r.kg) || 0) || byIndex(a, b);
-  return byIndex;
+  // 「新しい順（登録）」：あとから登録したものを上に（一覧を区切って出すので、新しい予約が下に隠れないように）
+  return (a, b) => b.i - a.i;
 }
 
 function shipmentComparator(mode) {
@@ -463,7 +472,8 @@ function shipmentComparator(mode) {
   if (mode === "dateDesc") return (a, b) => String(b.s.date).localeCompare(String(a.s.date)) || b.i - a.i;
   if (mode === "dateAsc") return (a, b) => String(a.s.date).localeCompare(String(b.s.date)) || byIndex(a, b);
   if (mode === "name") return (a, b) => customerSortKey(a.s).localeCompare(customerSortKey(b.s), "ja") || String(a.s.date).localeCompare(String(b.s.date)) || byIndex(a, b);
-  return byIndex;
+  // 「新しい順（登録）」：あとから登録したものを上に
+  return (a, b) => b.i - a.i;
 }
 
 function loadPricesFrom(x) {
@@ -524,7 +534,9 @@ function fillOptions() {
   document.getElementById("filterMonth").innerHTML = '<option value="">すべて</option>' + months.map(m => `<option>${m}</option>`).join("");
   document.getElementById("channel").innerHTML = '<option value="">未選択</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("");
   document.getElementById("filterChannel").innerHTML = '<option value="">すべて</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("") + '<option value="__none">未設定</option>';
-  document.getElementById("filterStatus").innerHTML = '<option value="">すべて</option>' + STATUS_KEYS.map(k => `<option value="${k}">${STATUSES[k]}</option>`).join("");
+  document.getElementById("filterStatus").innerHTML = `<option value="">すべて</option><option value="${STATUS_FILTER_ACTIVE}">出荷済み以外</option>` + STATUS_KEYS.map(k => `<option value="${k}">${STATUSES[k]}</option>`).join("");
+  // はじめは出荷済みを隠す（毎日見るのは、まだ出荷していない予約がほとんどのため）
+  document.getElementById("filterStatus").value = STATUS_FILTER_ACTIVE;
   refreshCustomerSelects();
 }
 
@@ -1182,6 +1194,7 @@ function commitReservation(r) {
     r.id = uid("reservation");
     r.status = "received";
     reservations.push(r);
+    revealListRow("reservations", getVisibleReservations().findIndex(x => x.r === r));
   } else {
     const i = reservations.findIndex(x => x.id === editingReservationId);
     r.id = editingReservationId;
@@ -1325,20 +1338,93 @@ function getShippedTotals() {
   return totals(shipments);
 }
 
+// 一覧に出す行を、listLimits の数までにする（印刷のときは全部）
+function limitRows(list, key) {
+  return printingAllRows ? list : list.slice(0, listLimits[key]);
+}
+
+// 一覧の下に、何件中何件を出しているかと「もっと見る」ボタンを出す。note は、ほかに知らせたいこと（無ければ空）
+function showListMore(key, shown, total, note) {
+  const el = document.getElementById(`${key}More`);
+  const rest = total - shown;
+  const lines = [];
+  if (rest > 0) lines.push(`<p>${total}件のうち、${shown}件を表示しています。</p><button type="button" class="tool-button" data-action="showMoreRows" data-arg="${key}">もっと見る（あと${Math.min(rest, LIST_PAGE_SIZE)}件）</button>`);
+  if (note) lines.push(`<p>${esc(note)}</p>`);
+  el.innerHTML = lines.join("");
+  el.hidden = !lines.length;
+}
+
+const LIST_DISPLAYS = { reservations: () => displayReservations(), shipments: () => displayShipments(), customers: () => displayCustomers() };
+
+function showMoreRows(key) {
+  if (!Object.prototype.hasOwnProperty.call(listLimits, key)) return;
+  listLimits[key] += LIST_PAGE_SIZE;
+  LIST_DISPLAYS[key]();
+  // ボタンが作り直されるので、続けて押せるように、新しい「もっと見る」ボタンに選択を移す
+  document.querySelector(`#${key}More button`)?.focus();
+}
+
+// 検索・絞り込み・並び順を変えたら、また最初の LIST_PAGE_SIZE 件から出す
+function resetListLimit(key) {
+  listLimits[key] = LIST_PAGE_SIZE;
+}
+
 function getVisibleReservations() {
+  const fs = document.getElementById("filterStatus").value;
+  const sortMode = document.getElementById("reservationSort").value;
+  return reservations.map((r, i) => ({ r, i })).filter(({ r }) => reservationMatchesFilters(r) && reservationMatchesStatus(r, fs)).sort(reservationComparator(sortMode));
+}
+
+// 予約一覧の検索・品種・月・受付経路の条件に合うか（「状態」は見ない）
+function reservationMatchesFilters(r) {
   const q = document.getElementById("searchName").value.trim();
   const fv = document.getElementById("filterVariety").value;
   const fm = document.getElementById("filterMonth").value;
   const fc = document.getElementById("filterChannel").value;
-  const fs = document.getElementById("filterStatus").value;
-  const sortMode = document.getElementById("reservationSort").value;
-  return reservations.map((r, i) => ({ r, i })).filter(({ r }) => !(q && !customerName(r).includes(q) && !(r.name || "").includes(q) || fv && r.variety !== fv || fm && r.month !== fm || fc && channelOf(r) !== (fc === "__none" ? "" : fc) || fs && statusOf(r) !== fs)).sort(reservationComparator(sortMode));
+  // 名前：顧客名か、予約に書いた名前に、検索の文字が入っているか
+  if (q && !customerName(r).includes(q) && !(r.name || "").includes(q)) return false;
+  if (fv && r.variety !== fv) return false;
+  if (fm && r.month !== fm) return false;
+  // 受付経路：「未設定」（__none）は、経路が空の予約
+  if (fc && channelOf(r) !== (fc === "__none" ? "" : fc)) return false;
+  return true;
+}
+
+// 予約一覧の「状態」の条件に合うか（fs が空なら、すべて合う。「出荷済み以外」なら、出荷済みでないものが合う）
+function reservationMatchesStatus(r, fs) {
+  if (!fs) return true;
+  if (fs === STATUS_FILTER_ACTIVE) return statusOf(r) !== "shipped";
+  return statusOf(r) === fs;
+}
+
+// 「出荷済み以外」を選んでいるときに、ほかの条件には合うが、出荷済みなので隠している予約の件数（選んでいなければ 0）
+function hiddenShippedCount() {
+  if (document.getElementById("filterStatus").value !== STATUS_FILTER_ACTIVE) return 0;
+  return reservations.filter(r => statusOf(r) === "shipped" && reservationMatchesFilters(r)).length;
+}
+
+// 予約を「出荷済み」にしたとき、「出荷済み以外」の表示で一覧から消えるので、消えた理由を知らせる
+function notifyShippedHidden() {
+  if (document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE) {
+    notify("出荷済みにしました。今は「出荷済み以外」を表示しているので、一覧からは隠れます（上の「状態」で「すべて」か「出荷済み」を選ぶと見られます）。", "info", 8000);
+  }
+}
+
+// 登録したばかりの行が、区切った一覧の外（101件目より後ろ）に入ったら、見えるところまで表示を増やす
+// （登録できたかを一覧で確かめられるようにして、二重に登録しないため）。index は、表示する順で何番目か（無ければ -1）
+function revealListRow(key, index) {
+  if (index < 0 || index < listLimits[key]) return;
+  listLimits[key] = Math.ceil((index + 1) / LIST_PAGE_SIZE) * LIST_PAGE_SIZE;
 }
 
 function displayReservations() {
   const body = document.getElementById("reservationList");
   body.innerHTML = "";
-  getVisibleReservations().forEach(({ r, i }) => {
+  const visible = getVisibleReservations();
+  const shown = limitRows(visible, "reservations");
+  const hiddenShipped = hiddenShippedCount();
+  showListMore("reservations", shown.length, visible.length, hiddenShipped ? `出荷済みの予約${hiddenShipped}件は隠しています（上の「状態」で「すべて」か「出荷済み」を選ぶと見られます）。` : "");
+  shown.forEach(({ r, i }) => {
     const tr = document.createElement("tr");
     [varietyLabel(r.variety), monthLabel(r.month), customerName(r), formatKg(r.kg)].forEach((v, n) => {
       const td = document.createElement("td");
@@ -1376,6 +1462,7 @@ function displayReservations() {
       reservations[i].status = e.target.value;
       save("reservations", reservations);
       refreshAll();
+      if (e.target.value === "shipped") notifyShippedHidden();
     };
     statusTd.appendChild(sel);
     tr.appendChild(statusTd);
@@ -1662,6 +1749,7 @@ function commitShipment(s) {
   if (editingShipmentId === null) {
     s.id = uid("shipment");
     shipments.push(s);
+    revealListRow("shipments", getVisibleShipments().findIndex(x => x.s === s));
   } else {
     const i = shipments.findIndex(x => x.id === editingShipmentId);
     s.id = editingShipmentId;
@@ -1686,6 +1774,7 @@ function commitShipment(s) {
         target.status = "shipped";
         save("reservations", reservations);
         refreshAll();
+        notifyShippedHidden();
       });
     }
   }
@@ -1761,7 +1850,10 @@ function displayShipments() {
   displayVarietyMismatches();
   const b = document.getElementById("shipmentList");
   b.innerHTML = "";
-  getVisibleShipments().forEach(({ s, i }) => {
+  const visible = getVisibleShipments();
+  const shown = limitRows(visible, "shipments");
+  showListMore("shipments", shown.length, visible.length, "");
+  shown.forEach(({ s, i }) => {
     const tr = document.createElement("tr");
     [s.date, varietyLabel(s.variety), customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
       const td = document.createElement("td");
@@ -1834,7 +1926,8 @@ function getVisibleCustomers() {
   })).filter(({ c }) => [c.name, c.phone, c.address].join(" ").includes(q));
   arr.sort((a, b) => {
     if (sort === "recent") {
-      return a.originalIndex - b.originalIndex;
+      // 「新しい順（登録）」：あとから登録した顧客を上に
+      return b.originalIndex - a.originalIndex;
     }
     if (sort === "reservations") {
       return b.s.reserved - a.s.reserved || String(a.c.furigana || a.c.name || "").localeCompare(String(b.c.furigana || b.c.name || ""), "ja");
@@ -1845,7 +1938,9 @@ function getVisibleCustomers() {
 }
 
 function displayCustomers() {
-  const arr = getVisibleCustomers();
+  const visible = getVisibleCustomers();
+  const arr = limitRows(visible, "customers");
+  showListMore("customers", arr.length, visible.length, "");
   // 同じ名前の人を番号で見分けているときは、予約・出荷の顧客の欄と同じ番号を付ける（電話・住所は一覧の別の欄にあるので添えない）
   const names = customerDisplayNames();
   document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
@@ -2098,6 +2193,7 @@ function commitCustomer(name, furigana, address) {
   } else {
     customers.push(c);
     nameLinked = nameLinkedTo(c);
+    revealListRow("customers", getVisibleCustomers().findIndex(x => x.c === c));
   }
   nameLinked.forEach(x => {
     x.customerId = c.customerId;
@@ -3181,7 +3277,8 @@ function exportReservationsCsv() {
     return;
   }
   downloadCsv(`reservations-${dateStamp()}.csv`, ["品種", "月", "名前", "kg", "受付経路", "状態"], rows);
-  notify(`予約${rows.length}件をCSVに書き出しました（表示中の絞り込み・並び順のとおり）`, "success");
+  const hiddenShipped = hiddenShippedCount();
+  notify(`予約${rows.length}件をCSVに書き出しました（表示中の絞り込み・並び順のとおり）${hiddenShipped ? `。出荷済みの予約${hiddenShipped}件は入っていません（入れるときは、「状態」で「すべて」を選んでから書き出してください）` : ""}`, hiddenShipped ? "info" : "success", hiddenShipped ? 10000 : undefined);
 }
 
 function exportShipmentsCsv() {
@@ -3208,10 +3305,28 @@ function printCurrentList() {
   window.print();
 }
 
+// 印刷するときは、一覧を区切らずに全部の行を出し、終わったら元に戻す
+function redrawLists() {
+  Object.values(LIST_DISPLAYS).forEach(f => f());
+}
+window.addEventListener("beforeprint", () => {
+  // 納品書・請求書の印刷では一覧は紙に出ないので、作り直さない
+  if (document.body.classList.contains("printing-doc")) return;
+  printingAllRows = true;
+  redrawLists();
+});
+window.addEventListener("afterprint", () => {
+  if (!printingAllRows) return;
+  printingAllRows = false;
+  redrawLists();
+});
+
 window.addEventListener("beforeprint", () => {
   const tab = document.querySelector(".view-tab.active");
   const el = document.getElementById("printTitle");
-  if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}｜${todayString().replace(/-/g, "/")}`;
+  // 予約一覧で出荷済みを隠しているときは、紙にもそのことを残す
+  const filterNote = tab && tab.dataset.view === "reservationsView" && document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE ? "（出荷済み以外）" : "";
+  if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}${filterNote}｜${todayString().replace(/-/g, "/")}`;
 });
 
 // ---------- バックアップ（書き出し・読み込み） ----------
@@ -3463,17 +3578,21 @@ document.getElementById("reservationSort").value = loadChoice(RESERVATION_SORT_K
 document.getElementById("shipmentSort").value = loadChoice(SHIPMENT_SORT_KEY, SHIPMENT_SORTS, "recent");
 document.getElementById("shipmentDate").value = todayString();
 document.getElementById("reservationSort").addEventListener("change", e => {
+  resetListLimit("reservations");
   save(RESERVATION_SORT_KEY, e.target.value);
   refreshAll();
 });
 document.getElementById("shipmentSort").addEventListener("change", e => {
+  resetListLimit("shipments");
   save(SHIPMENT_SORT_KEY, e.target.value);
   refreshAll();
 });
-["searchName", "filterVariety", "filterMonth", "filterChannel", "filterStatus", "customerSearch", "customerSort"].forEach(id => document.getElementById(id).addEventListener("input", refreshAll));
+["searchName", "filterVariety", "filterMonth", "filterChannel", "filterStatus", "customerSearch", "customerSort"].forEach(id => document.getElementById(id).addEventListener("input", () => {
+  resetListLimit(id.startsWith("customer") ? "customers" : "reservations");
+  refreshAll();
+}));
 document.getElementById("filterVariety").onchange = refreshAll;
 document.getElementById("filterMonth").onchange = refreshAll;
-document.getElementById("customerSort").onchange = displayCustomers;
 document.getElementById("customerSelect").onchange = e => {
   document.getElementById("name").value = customers.find(c => c.customerId === e.target.value)?.name || "";
 };
@@ -3522,7 +3641,7 @@ document.getElementById("loginForm").addEventListener("submit", submitLogin);
 const PAGE_ACTIONS = {
   addReservation, addShipment, cancelCustomerEdit, cancelEdit, cancelShipmentEdit,
   exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
-  logout, printCurrentList, retryCloud, saveCustomer,
+  logout, printCurrentList, retryCloud, saveCustomer, showMoreRows,
   setStockMode: mode => setStockMode(mode),
   openImportFile: () => document.getElementById("importFile").click(),
   reloadPage: () => location.reload()

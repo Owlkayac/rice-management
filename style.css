@@ -717,6 +717,20 @@ small {
   margin: -14px 0 16px;
 }
 
+/* 一覧の下の「何件のうち何件を表示」と「もっと見る」 */
+.list-more {
+  margin: 8px 0 16px;
+  color: var(--green-900);
+}
+
+.list-more p {
+  margin: 0 0 8px;
+}
+
+.list-more .tool-button {
+  width: 100%;
+}
+
 .tool-button {
   flex: 1;
   min-width: 150px;

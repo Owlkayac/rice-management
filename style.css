@@ -154,6 +154,38 @@ h2 {
   margin: 8px 0 0;
 }
 
+/* 状態が「出荷済み」なのに出荷の登録が足りない予約（ホームの1行と、予約一覧の目印） */
+.home-shortage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 4px solid #c0392b;
+  border-radius: 6px;
+  background: #fdecea;
+  color: #8a1f12;
+  font-weight: bold;
+}
+
+.home-shortage[hidden] {
+  display: none;
+}
+
+.home-shortage .tool-button {
+  min-height: 44px;
+}
+
+.status-shortage {
+  display: block;
+  margin-top: 4px;
+  color: #b00020;
+  font-size: 13px;
+  font-weight: bold;
+}
+
 .home-backup-remind {
   display: flex;
   flex-wrap: wrap;
@@ -1380,6 +1412,16 @@ small {
 
   .card-table .action-cell {
     justify-content: flex-end;
+  }
+
+  /* 状態の欄に「出荷の登録が足りません」が付くときは、選択欄の下に折り返す */
+  .card-table td.status-cell {
+    flex-wrap: wrap;
+  }
+
+  .card-table td.status-cell .status-shortage {
+    flex: 0 0 100%;
+    text-align: right;
   }
 
   .card-table td.action-td {

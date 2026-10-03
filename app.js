@@ -223,7 +223,7 @@ function unshippedKg(reserved, shipped) {
 
 // 品種ごと（A〜F と「品種なし」）に「予約−出荷」を出し、残っている分（0未満は0）の合計と、予約より多く出荷した分の合計を返す。
 // 品種をまたいで差し引くと、ある品種の出しすぎが別の品種の残りを打ち消し、残りを見落とすため、品種ごとに数える
-// items には、残りがある品種ごとの { label: 品種名, kg: 残り } が入る
+// items には、残りがある品種ごとの { label: 品種名, kg: 残り } が入る。overItems には、予約より多く出荷した品種ごとの { label, kg: 多い分 } が入る
 function unshippedByVariety(reservationList, shipmentList) {
   // A〜F の7つめとして、A〜F 以外（品種なし・不明）のグループも数える
   const groups = [
@@ -233,23 +233,25 @@ function unshippedByVariety(reservationList, shipmentList) {
   let remaining = 0;
   let over = 0;
   const items = [];
+  const overItems = [];
   groups.forEach(({ label, match }) => {
     const rest = unshippedKg(sumKg(reservationList.filter(match)), sumKg(shipmentList.filter(match)));
     if (rest > 0) {
       remaining += rest;
       items.push({ label, kg: rest });
-    } else {
+    } else if (rest < 0) {
       over -= rest;
+      overItems.push({ label, kg: -rest });
     }
   });
-  return { remaining: roundKg(remaining), over: roundKg(over), items };
+  return { remaining: roundKg(remaining), over: roundKg(over), items, overItems };
 }
 
-// 表のマスに入れる未出荷量（HTML）。マイナスにはせず0kgと出し、予約より多く出荷した分を下に小さく添える
-// （予約に紐づけていない出荷などで、出荷が予約を超えることがあるため。中身は数字だけなので innerHTML に入れてよい）
-function unshippedCellHtml(reserved, shipped) {
-  const rest = unshippedKg(reserved, shipped);
-  return rest >= 0 ? formatKg(rest) : `0kg<small class="over-shipped">${formatKg(-rest)}多く出荷</small>`;
+// 出荷集計の表のマスに入れる未出荷量（HTML）。total は unshippedSummary().byVariety の1品種分（{ remaining, over }）。
+// 残りを出し、予約より多く出荷した顧客の分があれば下に小さく添える（中身は数字だけなので innerHTML に入れてよい）
+function unshippedCellHtml(total) {
+  const t = total || { remaining: 0, over: 0 };
+  return formatKg(t.remaining) + (t.over > 0 ? `<small class="over-shipped">${t.remaining > 0 ? "ほかに" : ""}${formatKg(t.over)}多く出荷</small>` : "");
 }
 
 // 品種を表示用の文字にする（古いデータで品種が無いときに「undefined」と出ないように）。
@@ -1471,28 +1473,40 @@ function getVisibleReservations() {
 
 // 予約・出荷の持ち主を見分ける文字。顧客に結びついていれば顧客の id、そうでなければ
 // 「未出荷の顧客」の結びついていない一覧と同じく、残っている顧客の id か名前で分ける
+// 品種のまとめ方（A〜F 以外は「品種なし」）。unshippedByVariety の label と同じ
+function varietyGroupLabel(v) {
+  return varieties.includes(v) ? v : "品種なし";
+}
+
 function ownerKey(item) {
   const c = customerFor(item);
   if (c) return `c:${c.customerId}`;
   return item.customerId ? `id:${item.customerId}` : `name:${String(item.name || "").trim()}`;
 }
 
-// 「未出荷だけ」の判定に使う表を、予約・出荷を1回ずつ見て作る（予約ごとに全部の出荷を見直すと、件数が多いと遅いため）
-// - rest：持ち主・品種ごとの「予約kg−出荷kg」。品種が A〜F 以外のものは「品種なし」としてまとめる（unshippedByVariety と同じ数え方）
-// - linked：予約の id → その予約に紐づけた出荷kgの合計
+// 「未出荷だけ」の判定と「出荷の登録が足りません」の目印に使う表
+// - rest：持ち主・品種ごとの未出荷（unshippedSummary の restByOwner。残りがあるものだけ）
+// - linked：予約の id → その予約に紐づけた出荷kgの合計（予約・出荷を1回ずつ見て作る）
 function unshippedContext() {
-  const rest = new Map();
   const linked = new Map();
-  const add = (item, sign) => {
-    const key = `${ownerKey(item)}|${varieties.includes(item.variety) ? item.variety : ""}`;
-    rest.set(key, (rest.get(key) || 0) + sign * (Number(item.kg) || 0));
-  };
-  reservations.forEach(r => add(r, 1));
   shipments.forEach(s => {
-    add(s, -1);
     if (s.reservationId) linked.set(s.reservationId, (linked.get(s.reservationId) || 0) + (Number(s.kg) || 0));
   });
-  return { rest, linked };
+  return { rest: unshippedSummary().restByOwner, linked };
+}
+
+// 予約の持ち主・品種に残っている未出荷（kg）。残りが無ければ 0
+function ownerVarietyRest(r, ctx) {
+  return ctx.rest.get(`${ownerKey(r)}|${varietyGroupLabel(r.variety)}`) || 0;
+}
+
+// 予約の状態が「出荷済み」なのに、出荷の登録が足りないときの足りない量（kg）。当てはまらなければ 0（目印だけで、数字は変えない）
+// その顧客・品種に未出荷が残っていて、しかもその予約自身の残り（予約kg−紐づけた出荷kg）もあるときだけにする
+// （同じ顧客・品種の別の予約の残りで、出荷し終えた予約にまで目印が付かないように）。量は2つの残りの小さいほう
+function shippedStatusShortage(r, ctx) {
+  if (statusOf(r) !== "shipped") return 0;
+  const own = unshippedKg(r.kg, ctx.linked.get(r.id) || 0);
+  return own > 0 ? roundKg(Math.min(own, ownerVarietyRest(r, ctx))) : 0;
 }
 
 // 予約に、まだ出荷していない分があるか。次の2つがどちらも残っているときに「未出荷」とする
@@ -1501,8 +1515,7 @@ function unshippedContext() {
 // 予約の状態（受付済み・出荷済みなど）は使わない
 function reservationIsUnshipped(r, ctx) {
   if (unshippedKg(r.kg, ctx.linked.get(r.id) || 0) <= 0) return false;
-  const key = `${ownerKey(r)}|${varieties.includes(r.variety) ? r.variety : ""}`;
-  return Math.round((ctx.rest.get(key) || 0) * 100) / 100 > 0;
+  return ownerVarietyRest(r, ctx) > 0;
 }
 
 // 予約一覧の検索・品種・月・受付経路の条件に合うか（「状態」は見ない）
@@ -1568,6 +1581,7 @@ function revealListRow(key, index) {
 
 function displayReservations() {
   showReservationFilterState();
+  const ctx = unshippedContext();
   const body = document.getElementById("reservationList");
   body.innerHTML = "";
   const visible = getVisibleReservations();
@@ -1592,6 +1606,7 @@ function displayReservations() {
     channelTd.textContent = channelOf(r) || "未設定";
     tr.appendChild(channelTd);
     const statusTd = document.createElement("td");
+    statusTd.className = "status-cell";
     statusTd.dataset.label = "状態";
     const sel = document.createElement("select");
     sel.className = `status-select status-${statusOf(r)}`;
@@ -1615,6 +1630,14 @@ function displayReservations() {
       if (e.target.value === "shipped") notifyShippedHidden();
     };
     statusTd.appendChild(sel);
+    // 状態が「出荷済み」なのに出荷の登録が足りないときは、目印を出す（数字は変えない）
+    const shortage = shippedStatusShortage(r, ctx);
+    if (shortage > 0) {
+      const warn = document.createElement("small");
+      warn.className = "status-shortage";
+      warn.textContent = `出荷の登録が足りません（${formatKg(shortage)}）`;
+      statusTd.appendChild(warn);
+    }
     tr.appendChild(statusTd);
     const td = document.createElement("td");
     td.className = "action-cell";
@@ -1675,13 +1698,13 @@ function displayDashboard() {
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
   document.getElementById("dashboardShippable").textContent = `出荷できる量（精米後）：${formatKg(varieties.reduce((a, v) => a + shippableKg(v), 0))}`;
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
-  // 未出荷量は品種ごとの残りの合計（出荷集計の「未出荷」列の合計と同じ）
-  const unshipped = unshippedByVariety(reservations, shipments);
+  // 未出荷量は、顧客ごと・品種ごとの残りの合計（「未出荷の顧客」の合計、出荷集計の「未出荷」列の合計と同じ）
+  const unshipped = unshippedSummary();
   document.getElementById("dashboardUnshippedTotal").textContent = formatKg(unshipped.remaining);
   const unshippedNote = document.getElementById("dashboardUnshippedNote");
   if (unshippedNote) {
     unshippedNote.hidden = unshipped.over <= 0;
-    unshippedNote.textContent = unshipped.over > 0 ? `予約より多く出荷した品種があります（合計${formatKg(unshipped.over)}）` : "";
+    unshippedNote.textContent = unshipped.over > 0 ? `予約より多く出荷した顧客・品種があります（合計${formatKg(unshipped.over)}）` : "";
   }
   document.getElementById("dashboardChannelBody").innerHTML = [...CHANNELS, ""].map(ch => {
     const list = reservations.filter(r => channelOf(r) === ch);
@@ -2038,14 +2061,16 @@ function displayShipments() {
   const r = getReservedTotals();
   const s = getShippedTotals();
   const body = document.getElementById("shipmentSummaryBody");
-  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(shippableKg(v))}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${unshippedCellHtml(r[v], s[v])}</td></tr>`);
+  // 「未出荷」列は、その品種の顧客ごとの残りの合計（予約量−出荷量とは合わないことがある。予約より多く出荷した顧客の分を、ほかの顧客の残りから引かないため）
+  const byVariety = unshippedSummary().byVariety;
+  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(shippableKg(v))}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${unshippedCellHtml(byVariety.get(v))}</td></tr>`);
   // 品種が入っていない（または不明な）予約・出荷も、表から消えないように「品種なし」の行にまとめる（在庫とは結びつけられないので在庫量・出荷できる量は「—」）
   const unknownReservations = unknownVarietyItems(reservations);
   const unknownShipments = unknownVarietyItems(shipments);
   if (unknownReservations.length || unknownShipments.length) {
     const unknownReserved = sumKg(unknownReservations);
     const unknownShipped = sumKg(unknownShipments);
-    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${unshippedCellHtml(unknownReserved, unknownShipped)}</td></tr>`);
+    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${unshippedCellHtml(byVariety.get("品種なし"))}</td></tr>`);
   }
   body.innerHTML = rows.join("");
 }
@@ -2100,9 +2125,9 @@ function customerStats(c, groups) {
   });
   const reserved = sumKg(rs);
   const shipped = sumKg(ss);
-  const { remaining, over, items } = unshippedByVariety(rs, ss);
+  const { remaining, over, items, overItems } = unshippedByVariety(rs, ss);
   return {
-    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items
+    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items, overItems
   };
 }
 
@@ -2145,10 +2170,54 @@ function displayCustomers() {
   });
 }
 
+// 未出荷の集計。未出荷は、持ち主（登録済みの顧客、または顧客に結びついていない名前・id のまとまり）ごと・品種ごとに
+// 「予約kg−出荷kg」を出し、残りがある分だけを足した量（予約の状態は使わない）。
+// ホーム・「未出荷の顧客」・集計の未出荷量・出荷集計の「未出荷」列・「未出荷だけ」は、すべてこの結果を使う（画面ごとに計算しない）
+// - customerRows：登録済みの顧客ごとの { c, s }（s は customerStats）
+// - unlinked：顧客に結びついていないまとまり（unlinkedGroups の結果に unshipped を足したもの）
+// - remaining・over：全体の未出荷の合計と、予約より多く出荷した分の合計
+// - byVariety：品種（label）→ { remaining, over }
+// - restByOwner：`持ち主|品種` → 残り（残りがあるものだけ）
+function unshippedSummary() {
+  return withCustomerLookup(() => {
+    // 描き直しの間は、1回集計したものを使い回す（描き直しでは予約・出荷も変えない。
+    // withCustomerLookup の中で reservations・shipments を書きかえる処理を足さないこと。足すと古い数字が出る）
+    const lookup = currentCustomerLookup();
+    if (lookup.unshippedSummary) return lookup.unshippedSummary;
+    const groups = groupItemsByCustomer();
+    const customerRows = customers.map(c => ({ c, s: customerStats(c, groups) }));
+    const unlinked = unlinkedGroups().map(g => ({ ...g, unshipped: unshippedByVariety(g.rs, g.ss) }));
+    const owners = [
+      ...customerRows.map(({ c, s }) => ({ key: `c:${c.customerId}`, items: s.unshippedItems, overItems: s.overItems })),
+      ...unlinked.map(g => ({ key: g.key, items: g.unshipped.items, overItems: g.unshipped.overItems }))
+    ];
+    const byVariety = new Map();
+    const restByOwner = new Map();
+    const varietyTotal = label => {
+      if (!byVariety.has(label)) byVariety.set(label, { remaining: 0, over: 0 });
+      return byVariety.get(label);
+    };
+    let remaining = 0;
+    let over = 0;
+    owners.forEach(o => {
+      o.items.forEach(i => {
+        remaining += i.kg;
+        varietyTotal(i.label).remaining = roundKg(varietyTotal(i.label).remaining + i.kg);
+        restByOwner.set(`${o.key}|${i.label}`, i.kg);
+      });
+      o.overItems.forEach(i => {
+        over += i.kg;
+        varietyTotal(i.label).over = roundKg(varietyTotal(i.label).over + i.kg);
+      });
+    });
+    lookup.unshippedSummary = { customerRows, unlinked, remaining: roundKg(remaining), over: roundKg(over), byVariety, restByOwner };
+    return lookup.unshippedSummary;
+  });
+}
+
 // 顧客ごとの未出荷（品種ごとの残りの合計）が0より大きい顧客を、多い順に並べる（ホームと「未出荷の顧客」で使う）
 function unshippedCustomerList() {
-  const groups = groupItemsByCustomer();
-  return customers.map(c => ({ c, s: customerStats(c, groups) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
+  return unshippedSummary().customerRows.filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
 }
 
 // 品種ごとの残りを「A 10kg、B 5kg」の形の文字にする
@@ -2199,8 +2268,14 @@ function displayUnlinkedUnshipped() {
   }
 }
 
-// 顧客に結びついていない予約・出荷を、名前ごと（顧客の id が残っているものは id ごと）にまとめ、未出荷が残っているまとまりを多い順に返す
+// 顧客に結びついていない予約・出荷のまとまりのうち、未出荷が残っているものを多い順に返す
 function unlinkedUnshippedGroups() {
+  return unshippedSummary().unlinked.filter(g => g.unshipped.remaining > 0).sort((a, b) => b.unshipped.remaining - a.unshipped.remaining);
+}
+
+// 顧客に結びついていない予約・出荷を、名前ごと（顧客の id が残っているものは id ごと）にまとめる。
+// key は ownerKey と同じ形（id:… か name:…）
+function unlinkedGroups() {
   const groups = new Map();
   const add = (item, kind) => {
     if (customerFor(item)) return;
@@ -2212,7 +2287,7 @@ function unlinkedUnshippedGroups() {
     const trimmed = rawName.trim();
     const key = missingCustomer ? `id:${item.customerId}` : `name:${trimmed}`;
     if (!groups.has(key)) {
-      groups.set(key, { name: trimmed || "（名前なし）", noName: !trimmed, names: new Set(), missingCustomer, hasSpacedName: false, rs: [], ss: [] });
+      groups.set(key, { key, name: trimmed || "（名前なし）", noName: !trimmed, names: new Set(), missingCustomer, hasSpacedName: false, rs: [], ss: [] });
     }
     const g = groups.get(key);
     // 顧客の id ごとのまとまりでは、予約・出荷によって名前の書き方が違うことがあるので、出てきた名前をすべて覚えておく
@@ -2228,7 +2303,7 @@ function unlinkedUnshippedGroups() {
   };
   reservations.forEach(r => add(r, "rs"));
   shipments.forEach(s => add(s, "ss"));
-  return [...groups.values()].map(g => ({ ...g, unshipped: unshippedByVariety(g.rs, g.ss) })).filter(g => g.unshipped.remaining > 0).sort((a, b) => b.unshipped.remaining - a.unshipped.remaining);
+  return [...groups.values()];
 }
 
 // 顧客が登録されていない名前1つ分の表示（利用者の入力は textContent で入れる）
@@ -2647,7 +2722,27 @@ const HOME_UNSHIPPED_LIMIT = 10;
 
 function displayHome() {
   displayHomeUnshipped();
+  displayHomeShortage();
   displayHomeStock();
+}
+
+// 状態が「出荷済み」なのに、その顧客・品種に未出荷が残っている予約の件数を1行で知らせる
+function displayHomeShortage() {
+  const ctx = unshippedContext();
+  const count = reservations.filter(r => shippedStatusShortage(r, ctx) > 0).length;
+  document.getElementById("homeShortageNote").hidden = !count;
+  document.getElementById("homeShortageText").textContent = count ? `状態が「出荷済み」なのに、出荷の登録が足りない予約が${count}件あります。` : "";
+}
+
+// ホームの「予約一覧で見る」：予約一覧を、状態が「出荷済み」の予約で絞って開く（目印は一覧の「状態」の欄に出る）
+function showShippedShortage() {
+  // ほかの絞り込みで目印のある予約が隠れないよう、検索・品種・月・受付経路は空に戻す
+  ["searchName", "filterVariety", "filterMonth", "filterChannel"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("filterStatus").value = "shipped";
+  resetListLimit("reservations");
+  switchView("reservationsView");
+  refreshAll();
+  document.getElementById("reservationList").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // 未出荷の顧客（多い順）。顧客名・品種ごとの残り・電話番号と「出荷する」ボタン
@@ -4111,7 +4206,7 @@ const PAGE_ACTIONS = {
   addReservation, addShipment, cancelCustomerEdit, cancelEdit, cancelShipmentEdit,
   exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
   logout, printCurrentList, retryCloud, saveCustomer, showMoreRows,
-  openReservationForm, openShipmentForm, quickStatusFilter, showBackupPanel, toggleFab, toggleFilters,
+  openReservationForm, openShipmentForm, quickStatusFilter, showBackupPanel, showShippedShortage, toggleFab, toggleFilters,
   setStockMode: mode => setStockMode(mode),
   showView: id => onTabClick(id),
   openImportFile: () => document.getElementById("importFile").click(),

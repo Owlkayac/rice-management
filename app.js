@@ -59,7 +59,7 @@ const STOCK_MODE_KEY = "stockMode";
 const STOCK_MODES = {
   shipped: {
     basis: "出荷後",
-    help: "出荷済みの分を引いた残りで判定します。実際に手元へ残っているお米の量を確かめるときに向いています。"
+    help: "出荷を登録した分を引いた残りで判定します。実際に手元へ残っているお米の量を確かめるときに向いています。"
   },
   reserved: {
     basis: "予約後",
@@ -166,6 +166,9 @@ function notify(message, type = "info", duration = 5000, action = null) {
     button.type = "button";
     button.className = "toast-action";
     button.textContent = action.label;
+    // 押し下げたときに入力欄から選択が外れないようにする（外れると、スマホの表示では知らせの位置が下に動き、
+    // 指やマウスを離した場所にボタンが無くなって、押せないことがあるため）
+    button.addEventListener("mousedown", e => e.preventDefault());
     button.onclick = () => {
       // 処理が止まったとき（false を返したとき）は、知らせを残して、もう一度押せるようにする
       if (action.run() !== false) el.remove();
@@ -1946,11 +1949,11 @@ function addShipment() {
     const next = proceed;
     proceed = () => confirmThen(`この出荷の品種を「${varietyLabel(original.variety)}」から「${varietyLabel(s.variety)}」に変えて保存しますか？${hint}`, next);
   }
-  // 編集で予約との紐づけが外れる・変わるときは、黙って外さずに確かめる（予約の「出荷済みの量」が変わるため）
+  // 編集で予約との紐づけが外れる・変わるときは、黙って外さずに確かめる（予約の出荷登録量が変わるため）
   if (original && original.reservationId && original.reservationId !== s.reservationId) {
     const next = proceed;
     const message = reservations.some(x => x.id === original.reservationId)
-      ? `${reservationLinkText(original.reservationId)}\n\nこの出荷と予約との紐づけが${s.reservationId ? "別の予約に変わります" : "外れます"}。その予約の「出荷済みの量」から、この出荷の分が減ります。このまま保存しますか？`
+      ? `${reservationLinkText(original.reservationId)}\n\nこの出荷と予約との紐づけが${s.reservationId ? "別の予約に変わります" : "外れます"}。その予約の出荷登録量から、この出荷の分が減ります。このまま保存しますか？`
       : "この出荷が紐づいていた予約は見つかりません（削除された可能性があります）。見つからない予約との紐づけを外して保存しますか？";
     proceed = () => confirmThen(message, next);
   }
@@ -2281,7 +2284,7 @@ function displayCustomers() {
   showListMore("customers", arr.length, visible.length, "");
   // 同じ名前の人を番号で見分けているときは、予約・出荷の顧客の欄と同じ番号を付ける（電話・住所は一覧の別の欄にあるので添えない）
   const names = customerDisplayNames();
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td data-label="最後の出荷日">${esc(s.lastShip) || "—"}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷登録量">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td data-label="最後の出荷日">${esc(s.lastShip) || "—"}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
   // ボタンの処理は onclick 属性に顧客の id を書き込まず、ここで結びつける
   // （読み込んだバックアップの id に細工があっても、スクリプトとして動かないようにするため）
   const rows = document.getElementById("customerList").querySelectorAll("tr");
@@ -2720,7 +2723,7 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name + customerDisplayNames().get(c.customerId).number)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div>${shipmentHistoryHtml(s.ss)}<div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name + customerDisplayNames().get(c.customerId).number)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷登録量：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div>${shipmentHistoryHtml(s.ss)}<div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
   // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
   d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
   d.querySelector(".detail-close-button").onclick = () => d.hidden = true;
@@ -3918,6 +3921,8 @@ async function submitLogin(event) {
   }
   passwordInput.value = "";
   hideLoginScreen();
+  // ログインし直したので、操作した時刻を今にする（前の古い時刻で、すぐにロックしないように）
+  writeStoredActivity(Date.now());
   afterSignIn(data.email);
 }
 
@@ -4264,8 +4269,15 @@ async function startCloud() {
   }
   if (!data) {
     showLoginStage("password", "");
+    const locked = takeAutoLockNotice();
+    if (locked) setLoginMessage(`30分間操作がなかったため、自動でログアウトしました（顧客の情報を守るため）。もう一度ログインしてください。${locked === "editing" ? "\n入力の途中だった内容は、保存されていません。" : ""}`, false);
     return;
   }
+  takeAutoLockNotice();
+  // 前の操作から時間がたっていれば、データを読み込む前にログアウトする（開き直したページで、ログイン画面が出る）
+  if (await lockIfIdleAtStart()) return;
+  // ここから使い始めるので、操作した時刻を今にする
+  writeStoredActivity(Date.now());
   afterSignIn(data.email);
 }
 
@@ -4275,6 +4287,112 @@ async function logout() {
   await signOutSupabase();
   // 画面のデータを残さないよう、ページを開き直す（ログイン画面が出る）
   location.reload();
+}
+
+// ---------- しばらく操作しないときの自動ロック ----------
+// スマホをなくしたときなどに、顧客の住所・電話番号が見えたままにならないよう、
+// 操作しないまま決めた時間がたったらログアウトする（戻るときは、パスワードと認証アプリのコードを入れ直す）
+
+const AUTO_LOCK_MS = 30 * 60 * 1000;
+const AUTO_LOCK_NOTICE_KEY = "autoLocked";
+// 最後に操作した時刻（すべてのタブと、開き直したあとでも分かるよう、この端末のブラウザに残す。顧客のデータではない）
+const LAST_ACTIVITY_STORAGE_KEY = "lastActivityAt";
+// 書き込みは、多くてもこの間隔に1回にする
+const ACTIVITY_WRITE_MS = 15 * 1000;
+let lastActivityAt = Date.now();
+let lastActivityWrittenAt = 0;
+
+function readStoredActivity() {
+  try {
+    const n = Number(localStorage.getItem(LAST_ACTIVITY_STORAGE_KEY));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredActivity(time) {
+  try {
+    localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(time));
+    lastActivityWrittenAt = time;
+  } catch {
+    // 残せないときは、このタブの中の時刻だけで判定する
+  }
+}
+
+function recordActivity() {
+  lastActivityAt = Date.now();
+  if (lastActivityAt - lastActivityWrittenAt >= ACTIVITY_WRITE_MS) writeStoredActivity(lastActivityAt);
+}
+
+["pointerdown", "keydown", "input", "wheel", "touchstart"].forEach(type => {
+  document.addEventListener(type, recordActivity, { capture: true, passive: true });
+});
+
+// どのタブの操作でもよいので、いちばん新しい操作からの時間
+function idleMs() {
+  return Date.now() - Math.max(lastActivityAt, readStoredActivity());
+}
+
+// ログアウトして、ログイン画面を出す（画面のデータを残さないよう、ページを開き直す）。
+// ログアウトに失敗したら、開き直さずに知らせる（ログインが残ったまま開き直すと、そのまま使えてしまうため）
+async function lockNow(wasEditing) {
+  cloudSigningOut = true;
+  try {
+    sessionStorage.setItem(AUTO_LOCK_NOTICE_KEY, wasEditing ? "editing" : "1");
+  } catch {
+    // 理由の知らせを出せないだけなので、そのままロックする
+  }
+  const { error } = await signOutSupabase();
+  if (error) {
+    cloudSigningOut = false;
+    notify(`自動でログアウトできませんでした。手で「ログアウト」を押してください。\n${cloudErrorText(error)}`, "error", 15000);
+    return false;
+  }
+  location.reload();
+  return true;
+}
+
+async function autoLockIfIdle() {
+  if (!cloudReady || cloudSigningOut) return;
+  if (idleMs() < AUTO_LOCK_MS) return;
+  // 保存できていない変更があるときは、ロックしない（ログアウトすると、その変更が消えるため）。
+  // 送り終えたら、次の確認でロックする。送れないままのときは、画面の上の赤い枠で知らせているが、ロックもされない
+  if (hasUnsentCloudChanges()) return;
+  await lockNow(userIsEditing());
+}
+
+// スマホでは、画面を消している間はタイマーが止まるので、画面に戻ったとき・「戻る」で戻ったときにも確かめる
+setInterval(autoLockIfIdle, 60 * 1000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") autoLockIfIdle();
+});
+window.addEventListener("pageshow", e => {
+  if (e.persisted) autoLockIfIdle();
+});
+
+// ページを開いたときに、ログインが残っていても、前の操作から決めた時間がたっていればログアウトする
+// （開き直すだけでロックを通り抜けないように。iPhone のホーム画面のアプリは、裏に回すと閉じられて開き直しになりやすい）。
+// 時刻が残っていない（初めて開いた）ときは、ロックしない
+async function lockIfIdleAtStart() {
+  const stored = readStoredActivity();
+  if (!stored || Date.now() - stored < AUTO_LOCK_MS) return false;
+  if (await lockNow(false)) return true;
+  // ログアウトできなかったときは、データを読み込まずに止める（時間がたった端末で、データを出さないため）
+  takeAutoLockNotice();
+  showCloudLoading("しばらく操作がなかったため、ログアウトしようとしましたが、できませんでした。「もう一度読み込む」を押してください。", true);
+  return true;
+}
+
+// 自動ロックのあとに開き直したときは、ログイン画面で理由を伝える（印は1回で消す）
+function takeAutoLockNotice() {
+  try {
+    const locked = sessionStorage.getItem(AUTO_LOCK_NOTICE_KEY);
+    sessionStorage.removeItem(AUTO_LOCK_NOTICE_KEY);
+    return locked;
+  } catch {
+    return null;
+  }
 }
 
 // ほかのタブでログアウトしたときや、ログインの期限が切れて延長できなかったときは、開き直してログイン画面を出す

@@ -7,11 +7,16 @@
          万一、細工した文字が画面に入っても、スクリプトとして動かず、ほかのサイトへデータを送れないようにするため。
          別の Supabase につなぐときは、connect-src の URL も supabase-config.js の Project URL に変えること。
          img-src の data: は、2段階認証の登録用のQRコード（Supabase から SVG の画像として届く）を出すため（<img> の SVG はスクリプトとして動かない） -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://aacfbxcbuesrfolmxltc.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src https://aacfbxcbuesrfolmxltc.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
     <!-- ほかのサイトへ移るときに、このページのアドレスを伝えない -->
     <meta name="referrer" content="no-referrer">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=35">
+    <!-- スマホのホーム画面に追加したときの名前・アイコン（ファイルの場所は、このページからの相対の場所で書く） -->
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="米予約">
+    <meta name="theme-color" content="#2f6b3b">
+    <link rel="stylesheet" href="style.css?v=36">
   </head>
   <body>
     <div class="container">
@@ -271,7 +276,7 @@
               <small id="dashboardShippable" class="card-sub"></small>
             </section>
             <section class="total-card shipment-card">
-              <p>総出荷量</p>
+              <p>総出荷登録量</p>
               <strong id="dashboardShipments">0kg</strong>
             </section>
             <section class="total-card remaining-card">
@@ -316,7 +321,7 @@
                   <th>在庫量(精米前)</th>
                   <th>出荷できる量</th>
                   <th>予約量</th>
-                  <th>出荷量</th>
+                  <th>出荷登録量</th>
                   <th>未出荷</th>
                 </tr>
               </thead>
@@ -415,7 +420,7 @@
                   <th>住所</th>
                   <th>メモ</th>
                   <th>予約合計</th>
-                  <th>出荷済み</th>
+                  <th>出荷登録量</th>
                   <th>未出荷</th>
                   <th>最後の出荷日</th>
                   <th class="no-print">詳細</th>
@@ -582,6 +587,6 @@
     <script src="vendor/supabase-js-2.117.2.js"></script>
     <script src="supabase-config.js"></script>
     <script src="supabase-client.js?v=27"></script>
-    <script src="app.js?v=37"></script>
+    <script src="app.js?v=38"></script>
   </body>
 </html>

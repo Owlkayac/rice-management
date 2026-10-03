@@ -540,6 +540,7 @@ function fillOptions() {
   refreshCustomerSelects();
 }
 
+// 予約・出荷の持ち主の顧客。決め方を変えたら、groupItemsByCustomer の owner も同じにする（一覧の集計と詳細の数字が食い違わないように）
 function customerFor(item) {
   return item.customerId ? customers.find(c => c.customerId === item.customerId) : customers.find(c => c.name === item.name);
 }
@@ -1901,9 +1902,36 @@ function unshippedCell(stats) {
   return `<span class="unshipped-value">${main}${note}</span>`;
 }
 
-function customerStats(c) {
-  const rs = reservations.filter(r => customerFor(r)?.customerId === c.customerId);
-  const ss = shipments.filter(s => customerFor(s)?.customerId === c.customerId);
+// 予約・出荷を、持ち主の顧客（customerFor と同じ決め方）ごとに1回で仕分ける。顧客の id → { rs, ss }
+// （customerStats を顧客ごとに呼ぶと、顧客の数だけ全部の予約・出荷を見直し、その1件ごとに全部の顧客から持ち主を探すため、
+//   件数が多いととても遅くなる。一覧を作るときは、これを1回作って使い回す）
+function groupItemsByCustomer() {
+  // customerFor は find で最初に見つかった顧客を使うので、同じ id・同じ名前が複数あっても、最初の顧客にそろえる
+  const byId = new Map();
+  const byName = new Map();
+  customers.forEach(c => {
+    if (!byId.has(c.customerId)) byId.set(c.customerId, c);
+    if (!byName.has(c.name)) byName.set(c.name, c);
+  });
+  const owner = item => item.customerId ? byId.get(item.customerId) : byName.get(item.name);
+  const groups = new Map();
+  customers.forEach(c => groups.set(c.customerId, { rs: [], ss: [] }));
+  reservations.forEach(r => {
+    const c = owner(r);
+    if (c) groups.get(c.customerId).rs.push(r);
+  });
+  shipments.forEach(s => {
+    const c = owner(s);
+    if (c) groups.get(c.customerId).ss.push(s);
+  });
+  return groups;
+}
+
+// 顧客ごとの集計。groups（groupItemsByCustomer の結果）を渡すと、仕分け済みの予約・出荷を使う（渡さなければ、ここで探す）
+function customerStats(c, groups) {
+  const group = groups && groups.get(c.customerId);
+  const rs = group ? group.rs : reservations.filter(r => customerFor(r)?.customerId === c.customerId);
+  const ss = group ? group.ss : shipments.filter(s => customerFor(s)?.customerId === c.customerId);
   const byV = totals(rs);
   const shipV = totals(ss);
   const month = {};
@@ -1922,9 +1950,11 @@ function customerStats(c) {
 function getVisibleCustomers() {
   const q = document.getElementById("customerSearch").value.trim();
   const sort = document.getElementById("customerSort").value;
-  const arr = customers.map((c, i) => ({
-    c, s: customerStats(c), originalIndex: i
-  })).filter(({ c }) => [c.name, c.phone, c.address].join(" ").includes(q));
+  const groups = groupItemsByCustomer();
+  // 先に検索で絞ってから、残った顧客だけを集計する
+  const arr = customers.map((c, i) => ({ c, originalIndex: i }))
+    .filter(({ c }) => [c.name, c.phone, c.address].join(" ").includes(q))
+    .map(x => ({ ...x, s: customerStats(x.c, groups) }));
   arr.sort((a, b) => {
     if (sort === "recent") {
       // 「新しい順（登録）」：あとから登録した顧客を上に
@@ -1960,7 +1990,8 @@ function displayCustomers() {
 function displayUnshippedCustomers() {
   const body = document.getElementById("unshippedCustomerList");
   if (!body) return;
-  const list = customers.map(c => ({ c, s: customerStats(c) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
+  const groups = groupItemsByCustomer();
+  const list = customers.map(c => ({ c, s: customerStats(c, groups) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
   // 同じ名前の人を番号で見分けているときは、顧客一覧と同じ番号を付ける
   const names = customerDisplayNames();
   body.innerHTML = list.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="未出荷">${formatKg(s.unshipped)}</td><td data-label="内訳">${esc(s.unshippedItems.map(i => `${i.label} ${formatKg(i.kg)}`).join("、"))}</td><td data-label="電話番号">${esc(c.phone)}</td><td class="action-td"><button class="detail-button">詳細</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty-message">未出荷の顧客はいません</td></tr>';

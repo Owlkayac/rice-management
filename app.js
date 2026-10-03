@@ -3319,7 +3319,9 @@ async function runCloudSave() {
   try {
     while (cloudSaveQueued) {
       cloudSaveQueued = false;
-      const error = await sendCloudChanges();
+      // 送る前に、コードまで済ませたログインかを確かめる（aal2 でないと、更新・削除が0行で終わり、
+      // 「ほかの人が変えた」という的外れな案内になるため）
+      const error = await checkCloudAal2() || await sendCloudChanges();
       if (error && error.conflict) {
         handleCloudConflict(error.conflict);
         break;
@@ -3329,7 +3331,9 @@ async function runCloudSave() {
         cloudSaveQueued = true;
         cloudSaveError = error;
         // 画面の下のほうを操作していても気づけるよう、お知らせも出す
-        notify("Supabase に保存できませんでした。画面のいちばん上の赤い枠を見てください。", "error", 10000);
+        notify(error.code === "AAL"
+          ? "ログインの確認が切れたため、Supabase に保存できませんでした。画面のいちばん上の赤い枠を見てください。"
+          : "Supabase に保存できませんでした。画面のいちばん上の赤い枠を見てください。", "error", 10000);
         break;
       }
       cloudSaveError = null;
@@ -3362,6 +3366,8 @@ function retryCloud() {
 function explainCloudError(error) {
   const text = `${error.message} ${error.code} ${error.details || ""}`;
   if (error.code === "SETUP") return "";
+  if (error.code === "AAL") return "ページを開き直すと、認証アプリのコードを聞かれます（保存できていない変更は、開き直すと消えます）。";
+  if (error.code === "EMPTY") return "ページを開き直してください。開き直しても空のときは、管理する人に、データが残っているか確かめてもらってください。";
   if (error.code === "DUPLICATE") return "「データを書き出す」でファイルに控えてから、ページを開き直してください。";
   if (error.code === "TIMEOUT") return "インターネットにつながっているか確かめてください。";
   if (/Failed to fetch|NetworkError|Load failed/i.test(text)) {
@@ -3374,7 +3380,7 @@ function explainCloudError(error) {
     return "ログインの期限が切れました。ページを開き直して、もう一度ログインしてください。";
   }
   if (error.code === "42501" || /permission denied|row-level security/i.test(text)) {
-    return "Supabase の行ごとのアクセス制限（RLS）で止められています。ログインしている人が、使う人のリスト（app_members）に入っているか、管理する人に確かめてもらってください。";
+    return "Supabase の行ごとのアクセス制限（RLS）で止められています。ログインしている人が、使う人のリスト（app_members）に入っているか、管理する人に確かめてもらってください。2段階認証（認証アプリのコード）を済ませていないときも、このエラーになります（ページを開き直して、コードを入れてください）。";
   }
   if (/Invalid API key|No API key|JWT|apikey/i.test(text)) {
     return "supabase-config.js の Publishable key が正しいか確かめてください。";
@@ -3387,7 +3393,8 @@ function explainCloudError(error) {
 
 function cloudErrorText(error) {
   const advice = explainCloudError(error);
-  return `${error.message}${error.code && error.code !== "SETUP" && error.code !== "DUPLICATE" ? `（コード：${error.code}）` : ""}${advice ? `\n${advice}` : ""}`;
+  const ownCodes = ["SETUP", "DUPLICATE", "AAL", "EMPTY"];
+  return `${error.message}${error.code && !ownCodes.includes(error.code) ? `（コード：${error.code}）` : ""}${advice ? `\n${advice}` : ""}`;
 }
 
 // 画面の上の「保存の状態」と、送れなかったときの赤いお知らせを、今の状態に合わせる
@@ -3435,8 +3442,21 @@ function hideCloudLoading() {
   document.querySelector(".container").inert = false;
 }
 
+// 2段階認証（コード）まで済ませていないときのエラー
+const CLOUD_AAL_ERROR = { message: "ログインの確認が切れました。ログインし直してください。", code: "AAL" };
+
+// 今のログインが、コードまで済ませた状態（aal2）かを確かめる。違えば CLOUD_AAL_ERROR、確かめられなければそのエラー、よければ null
+// （aal2 でないと、データベースは読むと0行・更新や削除も0行で終わるため、そのまま読んだり保存したりしない）
+async function checkCloudAal2() {
+  const { data, error } = await isSupabaseAal2();
+  if (error) return error;
+  return data ? null : CLOUD_AAL_ERROR;
+}
+
 // Supabase からすべてのデータを読み、アプリの形にする。読めなかったら { error } を返す
 async function fetchCloudData() {
+  const aalError = await checkCloudAal2();
+  if (aalError) return { error: aalError };
   const tables = [...CLOUD_TABLES, { table: CLOUD_VARIETY_TABLE, order: ["variety"] }];
   const results = await Promise.all(tables.map(t => fetchAllSupabaseRows(t.table, t.order)));
   const failed = results.find(r => r.error);
@@ -3520,6 +3540,16 @@ async function loadFromCloud() {
   remindBackupOnce();
 }
 
+// 読んだデータが、すべての表で0行なら true
+function cloudDataLooksEmpty(d) {
+  return d.lists.every(list => !list.length) && d.savedVarieties.size === 0;
+}
+
+// 画面に、Supabase から読んだデータ（行）があれば true
+function screenHasCloudData() {
+  return [...CLOUD_TABLES.map(t => t.table), CLOUD_VARIETY_TABLE].some(table => cloudBaseline[table] && cloudBaseline[table].size > 0);
+}
+
 // まだ送っていない変更があれば true（このときは読み直さない。読み直すと、その変更が消えるため）
 function hasUnsentCloudChanges() {
   return cloudSaving || cloudSaveQueued || !!cloudSaveError;
@@ -3574,6 +3604,13 @@ async function refreshFromCloud(force = false) {
     showCloudStatus();
     return;
   }
+  // 補助の保険：画面にはデータがあるのに、すべての表が0行で返ってきたときは、画面を置きかえない
+  // （2段階認証を済ませていないログインでは、エラーではなく0行が返るため。本当に全部消した場合とは区別できない）
+  if (cloudDataLooksEmpty(d) && screenHasCloudData()) {
+    cloudRefreshError = { message: "Supabase からデータを読み込めませんでした（すべて0件で返ってきたため、画面は置きかえていません）。", code: "EMPTY" };
+    showCloudStatus();
+    return;
+  }
   const recovered = !!cloudRefreshError;
   cloudRefreshError = null;
   showCloudStatus();
@@ -3615,19 +3652,37 @@ window.addEventListener("beforeunload", e => {
 // ログアウトのために開き直すときは true（閉じる前の確認を出さないため）
 let cloudSigningOut = false;
 
-function setLoginMessage(text, isError) {
-  const el = document.getElementById("loginMessage");
+// ログイン画面の段階（password：メール・パスワード、code：認証アプリのコード、enroll：認証アプリの登録）と、
+// それぞれのフォーム・最初に入れる欄・お知らせの欄
+const LOGIN_STAGES = {
+  password: { form: "loginForm", focus: "loginEmail", message: "loginMessage" },
+  code: { form: "mfaCodeForm", focus: "mfaCode", message: "mfaCodeMessage" },
+  // 登録の段階は、見出しに移す（スマホでキーボードが開いて、QRコードとキーが隠れないように）
+  enroll: { form: "mfaEnrollForm", focus: "mfaEnrollTitle", message: "mfaEnrollMessage" }
+};
+
+// ログイン画面の、指定した段階だけを出す（ほかの画面は操作できないようにする）
+function showLoginStage(stage, message) {
+  document.getElementById("cloudLoading").hidden = true;
+  document.getElementById("loginScreen").hidden = false;
+  document.querySelector(".container").inert = true;
+  Object.keys(LOGIN_STAGES).forEach(key => {
+    document.getElementById(LOGIN_STAGES[key].form).hidden = key !== stage;
+  });
+  // 登録の段階から離れるときは、QRコードとキーを画面から消す
+  if (stage !== "enroll") clearEnrollSecret();
+  setStageMessage(stage, message || "", !!message);
+  document.getElementById(LOGIN_STAGES[stage].focus).focus();
+}
+
+function setStageMessage(stage, text, isError) {
+  const el = document.getElementById(LOGIN_STAGES[stage].message);
   el.textContent = text;
   el.classList.toggle("login-message-error", !!isError);
 }
 
-// ログイン画面を出す（ほかの画面は操作できないようにする）
-function showLoginScreen(message) {
-  document.getElementById("cloudLoading").hidden = true;
-  document.getElementById("loginScreen").hidden = false;
-  document.querySelector(".container").inert = true;
-  setLoginMessage(message || "", !!message);
-  document.getElementById("loginEmail").focus();
+function setLoginMessage(text, isError) {
+  setStageMessage("password", text, isError);
 }
 
 function hideLoginScreen() {
@@ -3665,8 +3720,13 @@ async function submitLogin(event) {
   afterSignIn(data.email);
 }
 
-// ログインできたら、使う人のリストに入っているかを確かめてから、データを読み込む
+// ログインした人のメールアドレス（コードの確認・登録のあとで、画面の上に出すため）
+let pendingLoginEmail = "";
+
+// ログインの直後（と、ページを開いたとき）に1回だけ呼ぶ。
+// 使う人のリストに入っているかを確かめ、2段階認証の状態で、データの読み込み・コードの入力・登録のどれに進むかを決める
 async function afterSignIn(email) {
+  pendingLoginEmail = email;
   showCloudLoading("使う人のリストを確かめています…", false);
   const { data, error } = await isSupabaseMember();
   if (error) {
@@ -3676,12 +3736,300 @@ async function afterSignIn(email) {
   if (!data) {
     // リストに入っていない人は、ログインを消してログイン画面に戻す
     await signOutSupabase();
-    showLoginScreen(`「${email}」は、使う人のリストに入っていないため、使えません。管理する人に、Supabase の app_members に追加してもらってください。`);
+    showLoginStage("password", `「${email}」は、使う人のリストに入っていないため、使えません。管理する人に、Supabase の app_members に追加してもらってください。`);
     return;
   }
-  document.getElementById("cloudUserEmail").textContent = email;
+  // データを読み込む前に、2段階認証の状態を確かめる
+  showCloudLoading("2段階認証の状態を確かめています…", false);
+  const mfa = await getMfaState();
+  if (mfa.error) {
+    // 確かめられなかったときは「登録がない」とはみなさず、登録の段階には進まない
+    showCloudLoading(`2段階認証の状態を確かめられませんでした。\n${cloudErrorText(mfa.error)}\n直したら「もう一度読み込む」を押してください。`, true);
+    return;
+  }
+  if (mfa.data.aal2) {
+    startSignedIn();
+  } else if (mfa.data.verifiedFactors.length) {
+    showCodeStage(mfa.data.verifiedFactors);
+  } else {
+    startEnroll("first");
+  }
+}
+
+// コードまで済ませたあと：画面の上にメールアドレスを出し、データを読み込む
+function startSignedIn() {
+  document.getElementById("cloudUserEmail").textContent = pendingLoginEmail;
   document.getElementById("cloudUser").hidden = false;
   loadFromCloud();
+}
+
+// ---------- 2段階認証（認証アプリのコード） ----------
+
+// コードの確認・登録・削除の処理中は true（ボタンの連打で2回走らないように）
+let mfaBusy = false;
+// 登録の途中の登録の番号と、登録の種類（first：初めての登録、add：ログイン設定からの追加）
+let enrollFactorId = "";
+let enrollMode = "first";
+
+// 入れられたコードを、半角の6桁の数字にする（全角の数字や、間の空白も受け付ける）。6桁にならなければ ""
+function normalizeTotpCode(text) {
+  const code = String(text || "")
+    .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[\s　-]/g, "");
+  return /^\d{6}$/.test(code) ? code : "";
+}
+
+// コードの確認のエラーを、分かりやすい文にする
+function mfaErrorText(error) {
+  const text = `${error.message} ${error.code}`;
+  if (/rate.?limit|too many/i.test(text)) return "何度も確かめたため、しばらく確認できません。少し時間をおいてから、もう一度ためしてください。";
+  if (/mfa_verification_failed|mfa_challenge_expired|invalid.*(code|totp)/i.test(text)) {
+    return "コードが違うか、期限が切れています。スマホの時刻が合っているか確かめてください。";
+  }
+  return `確かめられませんでした。\n${cloudErrorText(error)}`;
+}
+
+// コードを入れる段階を出す（登録が2つ以上あるときは、どの登録かを選べるようにする）
+function showCodeStage(factors) {
+  const select = document.getElementById("mfaFactorSelect");
+  select.replaceChildren(...factors.map(f => {
+    const option = document.createElement("option");
+    option.value = f.id;
+    option.textContent = f.friendly_name || "認証アプリ";
+    return option;
+  }));
+  document.getElementById("mfaFactorPicker").hidden = factors.length < 2;
+  document.getElementById("mfaCode").value = "";
+  showLoginStage("code", "");
+}
+
+async function submitMfaCode(event) {
+  event.preventDefault();
+  if (mfaBusy) return;
+  const input = document.getElementById("mfaCode");
+  const code = normalizeTotpCode(input.value);
+  if (!code) {
+    setStageMessage("code", "認証アプリに出ている6桁の数字を入れてください。", true);
+    return;
+  }
+  const button = document.getElementById("mfaCodeButton");
+  mfaBusy = true;
+  button.disabled = true;
+  setStageMessage("code", "確かめています…", false);
+  const { error } = await verifyTotp(document.getElementById("mfaFactorSelect").value, code);
+  mfaBusy = false;
+  button.disabled = false;
+  input.value = "";
+  if (error) {
+    setStageMessage("code", mfaErrorText(error), true);
+    input.focus();
+    return;
+  }
+  hideLoginScreen();
+  startSignedIn();
+}
+
+// 登録用の QR コードとキーを、画面から消す
+function clearEnrollSecret() {
+  document.getElementById("mfaQr").removeAttribute("src");
+  document.getElementById("mfaSecret").textContent = "";
+  document.getElementById("mfaEnrollCode").value = "";
+  enrollFactorId = "";
+}
+
+// 登録の名前（毎回ちがう名前にする。同じ名前の登録は作れないため）
+function newFactorName() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  return `認証アプリ ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// 登録を始めて、QR コードを出す。mode は first（初めての登録）か add（ログイン設定からの追加）
+async function startEnroll(mode) {
+  enrollMode = mode;
+  showCloudLoading("登録用のQRコードを用意しています…", false);
+  // 前に途中でやめた登録（確認が済んでいないもの）を先に消す。確認済みの登録は消さない
+  const cleaned = await cleanupUnverifiedFactors();
+  const enrolled = cleaned.error ? cleaned : await enrollTotp(newFactorName());
+  if (enrolled.error) {
+    const text = `登録用のQRコードを用意できませんでした。\n${cloudErrorText(enrolled.error)}`;
+    if (mode === "add") {
+      closeLoginOverlay();
+      notify(text, "error", 15000);
+    } else {
+      showCloudLoading(`${text}\n直したら「もう一度読み込む」を押してください。`, true);
+    }
+    return;
+  }
+  const adding = mode === "add";
+  document.getElementById("mfaEnrollTitle").textContent = adding ? "認証アプリの登録を追加" : "2段階認証の登録";
+  document.getElementById("mfaEnrollLead").hidden = adding;
+  document.getElementById("mfaEnrollLogout").hidden = adding;
+  document.getElementById("mfaEnrollCancel").hidden = !adding;
+  showLoginStage("enroll", "");
+  enrollFactorId = enrolled.data.id;
+  document.getElementById("mfaQr").src = enrolled.data.qrCode;
+  document.getElementById("mfaSecret").textContent = enrolled.data.secret;
+}
+
+async function submitMfaEnroll(event) {
+  event.preventDefault();
+  if (mfaBusy || !enrollFactorId) return;
+  const input = document.getElementById("mfaEnrollCode");
+  const code = normalizeTotpCode(input.value);
+  if (!code) {
+    setStageMessage("enroll", "認証アプリに出た6桁の数字を入れてください。", true);
+    return;
+  }
+  const button = document.getElementById("mfaEnrollButton");
+  mfaBusy = true;
+  button.disabled = true;
+  setStageMessage("enroll", "確かめています…", false);
+  const { error } = await verifyTotp(enrollFactorId, code);
+  mfaBusy = false;
+  button.disabled = false;
+  input.value = "";
+  if (error) {
+    setStageMessage("enroll", mfaErrorText(error), true);
+    input.focus();
+    return;
+  }
+  clearEnrollSecret();
+  if (enrollMode === "add") {
+    closeLoginOverlay();
+    notify("認証アプリの登録を追加しました。", "success");
+    renderMfaPanel();
+    return;
+  }
+  hideLoginScreen();
+  startSignedIn();
+}
+
+// ログイン設定から開いた登録の画面を閉じて、元の画面に戻る
+function closeLoginOverlay() {
+  clearEnrollSecret();
+  hideLoginScreen();
+  hideCloudLoading();
+}
+
+// 登録の追加をやめる（途中の登録は、確認が済んでいないので消す）
+async function cancelAddMfaFactor() {
+  if (mfaBusy) return;
+  closeLoginOverlay();
+  // 消し終わるまでは、次の「登録を追加」を受け付けない（新しく作った登録まで消さないため）
+  mfaBusy = true;
+  const { error } = await cleanupUnverifiedFactors();
+  mfaBusy = false;
+  if (error) notify(`途中の登録を消せませんでした（次に登録するときに消します）。\n${cloudErrorText(error)}`, "warn", 10000);
+}
+
+// ---------- ログイン設定（登録の一覧・追加・削除） ----------
+
+function toggleMfaPanel() {
+  const panel = document.getElementById("mfaPanel");
+  panel.hidden = !panel.hidden;
+  document.getElementById("mfaPanelButton").setAttribute("aria-expanded", String(!panel.hidden));
+  if (!panel.hidden) renderMfaPanel();
+}
+
+function setMfaPanelNote(text, warn) {
+  const note = document.getElementById("mfaPanelNote");
+  note.textContent = text;
+  note.classList.toggle("mfa-panel-note-warn", !!warn);
+}
+
+function formatFactorDate(value) {
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? "" : d.toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+// 一覧を読むたびに増やす番号（あとから頼んだ一覧の返事が先に届いたとき、古い一覧で上書きしないため）
+let mfaPanelRenderCount = 0;
+
+// 登録済みの端末（確認済みの登録）を一覧にする
+async function renderMfaPanel() {
+  const count = ++mfaPanelRenderCount;
+  const list = document.getElementById("mfaFactorList");
+  list.replaceChildren();
+  setMfaPanelNote("読み込んでいます…", false);
+  const { data, error } = await listMfaFactors();
+  if (count !== mfaPanelRenderCount) return;
+  if (error) {
+    setMfaPanelNote(`登録の一覧を読み込めませんでした。\n${cloudErrorText(error)}`, true);
+    return;
+  }
+  const verified = data.verified;
+  const onlyOne = verified.length <= 1;
+  list.replaceChildren(...verified.map(f => {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "mfa-factor-name";
+    name.textContent = f.friendly_name || "認証アプリ";
+    const date = document.createElement("span");
+    date.className = "mfa-factor-date";
+    date.textContent = `登録日：${formatFactorDate(f.created_at)}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "delete-button";
+    button.textContent = "削除";
+    button.dataset.action = "removeMfaFactorById";
+    button.dataset.arg = f.id;
+    // 最後の1つは消せない（消すと、データを読めなくなるため）
+    button.disabled = onlyOne;
+    li.append(name, date, button);
+    return li;
+  }));
+  if (onlyOne) {
+    setMfaPanelNote("スマホをなくすとログインできなくなります。「登録を追加」で、新しいQRコードを2台で読み取っておいてください。それができないときは、管理する人に頼み方を確かめておいてください。\n最後の登録は消せません。登録のやり直しが必要なときは、管理する人に頼んでください。", true);
+  } else {
+    setMfaPanelNote("どの登録のコードでもログインできます。使わなくなった端末の登録は、削除してください（新しい登録を追加してから、古い登録を消します）。", false);
+  }
+}
+
+function startAddMfaFactor() {
+  if (mfaBusy) return;
+  startEnroll("add");
+}
+
+// 削除の処理中は、一覧の削除ボタンと「登録を追加」を押せないようにする
+function setMfaPanelBusy(busy) {
+  document.querySelectorAll("#mfaFactorList button, #mfaAddButton").forEach(b => b.disabled = busy);
+}
+
+async function removeMfaFactorById(factorId) {
+  if (mfaBusy) return;
+  // 一覧を読み直す前から処理中にする（2つの「削除」を続けて押して、両方とも消えないように）
+  mfaBusy = true;
+  setMfaPanelBusy(true);
+  try {
+    await removeMfaFactorChecked(factorId);
+  } finally {
+    mfaBusy = false;
+    setMfaPanelBusy(false);
+    renderMfaPanel();
+  }
+}
+
+async function removeMfaFactorChecked(factorId) {
+  // 消す直前に、もう一度数える（ほかのタブで消したあとかもしれないため）
+  const { data, error } = await listMfaFactors();
+  if (error) {
+    notify(`登録の一覧を読み込めませんでした。\n${cloudErrorText(error)}`, "error", 10000);
+    return;
+  }
+  const target = data.verified.find(f => f.id === factorId);
+  if (!target) return;
+  if (data.verified.length <= 1) {
+    notify("最後の登録は消せません。登録のやり直しが必要なときは、管理する人に頼んでください。", "warn", 10000);
+    return;
+  }
+  if (!confirm(`「${target.friendly_name || "認証アプリ"}」の登録を削除しますか？\nこの登録（同じQRコードを読み取ったすべての端末）のコードでは、ログインできなくなります。`)) return;
+  const removed = await removeMfaFactor(factorId);
+  if (removed.error) {
+    notify(`登録を削除できませんでした。\n${cloudErrorText(removed.error)}`, "error", 10000);
+  } else {
+    notify("登録を削除しました。", "success");
+  }
 }
 
 // ページを開いたとき：ログインしていればデータを読み込み、していなければログイン画面を出す
@@ -3697,7 +4045,7 @@ async function startCloud() {
     return;
   }
   if (!data) {
-    showLoginScreen("");
+    showLoginStage("password", "");
     return;
   }
   afterSignIn(data.email);
@@ -4198,6 +4546,8 @@ document.querySelectorAll(".view-tab, .sub-tab").forEach(e => e.onclick = () => 
 });
 refreshAll();
 document.getElementById("loginForm").addEventListener("submit", submitLogin);
+document.getElementById("mfaCodeForm").addEventListener("submit", submitMfaCode);
+document.getElementById("mfaEnrollForm").addEventListener("submit", submitMfaEnroll);
 
 // ボタンを押したときの処理。index.html には処理を直接書かず（onclick="…" を使わず）、data-action の名前でここから呼ぶ
 // （ページの中に書かれたスクリプトを動かさない決まり（Content-Security-Policy）を使えるようにして、
@@ -4206,6 +4556,7 @@ const PAGE_ACTIONS = {
   addReservation, addShipment, cancelCustomerEdit, cancelEdit, cancelShipmentEdit,
   exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
   logout, printCurrentList, retryCloud, saveCustomer, showMoreRows,
+  toggleMfaPanel, startAddMfaFactor, cancelAddMfaFactor, removeMfaFactorById,
   openReservationForm, openShipmentForm, quickStatusFilter, showBackupPanel, showShippedShortage, toggleFab, toggleFilters,
   setStockMode: mode => setStockMode(mode),
   showView: id => onTabClick(id),

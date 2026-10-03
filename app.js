@@ -153,8 +153,10 @@ function storeItem(k, text) {
 function notify(message, type = "info", duration = 5000, action = null) {
   const area = document.getElementById("toastArea");
   if (!area) return;
-  // 多すぎるときは古いものから消す。「保存しました」を先に、「元に戻す」などのボタン付きの知らせを最後に消す
-  while (area.children.length >= 4) (area.querySelector(".toast-success") || area.querySelector(".toast:not(.toast-has-action)") || area.firstChild).remove();
+  // 多すぎるときは古いものから消す。「保存しました」を先に、「元に戻す」などのボタン付きの知らせを最後に消す。
+  // スマホでは画面が狭く、知らせの下の一覧が押せなくなるので、2つまでにする
+  const max = window.matchMedia("(max-width: 600px)").matches ? 2 : 4;
+  while (area.children.length >= max) (area.querySelector(".toast-success") || area.querySelector(".toast:not(.toast-has-action):not(.toast-error)") || area.querySelector(".toast:not(.toast-has-action)") || area.firstChild).remove();
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = message;
@@ -174,6 +176,15 @@ function notify(message, type = "info", duration = 5000, action = null) {
       if (action.run() !== false) el.remove();
     };
     el.appendChild(button);
+    // ボタン付きの知らせは、文字に触れても消えないので、閉じるボタンを付ける（下の一覧を押せるように）
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "toast-close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "この知らせを閉じる");
+    close.addEventListener("mousedown", e => e.preventDefault());
+    close.onclick = () => el.remove();
+    el.appendChild(close);
   }
   area.appendChild(el);
   setTimeout(() => el.remove(), duration);
@@ -1890,7 +1901,7 @@ function displayUnknownVarietyStock(body) {
   if (!note) return;
   const lines = [];
   if (unknownReservations.length) lines.push(`品種が入っていない（または不明な）予約が${unknownReservations.length}件（${formatKg(sumKg(unknownReservations))}）あり、表の「品種なし」の行にまとめています。どの品種の在庫とも結びつけられないため、A〜F の行の予約量や残り在庫には入っていません。「注文」の「予約」でこれらの予約を編集して品種を選んでください。`);
-  if (unknownShipments.length) lines.push(`品種が入っていない（または不明な）出荷が${unknownShipments.length}件（${formatKg(sumKg(unknownShipments))}）あります。品種ごとの出荷量に入らないため、出荷ベースの残り在庫にも反映されていません。「注文」の「出荷」でこれらの出荷を編集して品種を選んでください。`);
+  if (unknownShipments.length) lines.push(`品種が入っていない（または不明な）出荷が${unknownShipments.length}件（${formatKg(sumKg(unknownShipments))}）あります。品種ごとの出荷登録量に入らないため、出荷ベースの残り在庫にも反映されていません。「注文」の「出荷」でこれらの出荷を編集して品種を選んでください。`);
   note.hidden = !lines.length;
   note.textContent = lines.join("\n");
 }
@@ -2115,8 +2126,8 @@ function shipmentMatchesFilters(s) {
   const q = document.getElementById("shipmentSearch").value.trim();
   const fv = document.getElementById("shipmentFilterVariety").value;
   const fm = document.getElementById("shipmentFilterMonth").value;
-  // 「品種なし」（__none）は、品種が入っていない出荷
-  if (fv && (fv === "__none" ? !!s.variety : s.variety !== fv)) return false;
+  // 「品種なし」（__none）は、品種が入っていない（または A〜F 以外の）出荷（集計の「品種なし」と同じ）
+  if (fv && (fv === "__none" ? varieties.includes(s.variety) : s.variety !== fv)) return false;
   if (fm && shipmentMonthKey(s) !== fm) return false;
   if (q) {
     const c = customerFor(s);
@@ -2679,8 +2690,9 @@ function undoDelete(kind, item, index, text) {
     return true;
   }
   // 持ち主の顧客や、紐づけていた予約が、その後に消されていたら戻さない（つながり先の無いデータを作らないため）
-  if (kind !== "customer" && item.customerId && !findCustomer(item.customerId)) {
-    notify(`この${label}の顧客が、その後に削除されたため、元に戻せません。`, "warn", 8000);
+  // 名前だけでつながる古いデータは、同じ名前の顧客が残っているかで確かめる
+  if (kind !== "customer" && (item.customerId ? !findCustomer(item.customerId) : !customerFor(item))) {
+    notify(item.customerId ? `この${label}の顧客が、その後に削除されたため、元に戻せません。` : `この${label}と同じ名前の顧客が見つからないため、元に戻せません。`, "warn", 8000);
     return true;
   }
   if (kind === "shipment" && item.reservationId) {
@@ -3547,7 +3559,8 @@ async function runCloudSave() {
     // 送れなかった・ぶつかったときは、保存できたとは知らせない
     const messages = pendingSaveNotices;
     pendingSaveNotices = [];
-    if (saved && messages.length) notify(messages.length === 1 ? messages[0] : `${messages.length}件の変更を保存しました。\n${messages.map(m => `・${m}`).join("\n")}`, "success", messages.length === 1 ? 5000 : 8000);
+    // 2件以上のときは、最初の2件だけを並べる（長いと画面をおおうため）
+    if (saved && messages.length) notify(messages.length === 1 ? messages[0] : `${messages.length}件の変更を保存しました。\n${messages.slice(0, 2).map(m => `・${m}`).join("\n")}${messages.length > 2 ? `\n・ほか${messages.length - 2}件` : ""}`, "success", messages.length === 1 ? 5000 : 8000);
   }
 }
 
@@ -3630,11 +3643,13 @@ function showCloudStatus() {
     status.textContent = "Supabase に保存済み";
   }
   status.classList.toggle("cloud-status-error", !cloudSaving && !(cloudRefreshing && cloudRefreshShown) && !!(cloudSaveError || cloudRefreshError));
+  publishUnsentState();
 }
 
 // 読み込みの間（と、読み込めなかったとき）は、画面全体をおおって操作できないようにする
 function showCloudLoading(text, canRetry) {
   document.getElementById("loginScreen").hidden = true;
+  document.getElementById("lockRetryButton").hidden = true;
   document.getElementById("cloudLoadingText").textContent = text;
   document.getElementById("cloudReloadButton").hidden = !canRetry;
   document.getElementById("cloudLoading").hidden = false;
@@ -3772,7 +3787,8 @@ function userIsEditing() {
 // 30秒ごとの読み直し（force が false）は、編集や入力の途中なら後回しにする。
 // 操作の前の読み直し（force が true）は、古いデータで保存しないよう、編集中でも読み直す
 async function refreshFromCloud(force = false) {
-  if (!cloudReady || hasUnsentCloudChanges()) return;
+  // 自動ロックで画面をおおっている間は読み直さない（見ている人がいないうえ、ログインを延ばし続けないため）
+  if (!cloudReady || hasUnsentCloudChanges() || screenLocked) return;
   if (cloudRefreshing) {
     // 30秒ごとの読み直しの途中に、操作の前の読み直しを頼まれたら、終わったときに「もう一度操作してください」を出す
     if (force) {
@@ -3921,8 +3937,9 @@ async function submitLogin(event) {
   }
   passwordInput.value = "";
   hideLoginScreen();
-  // ログインし直したので、操作した時刻を今にする（前の古い時刻で、すぐにロックしないように）
+  // ログインし直したので、操作した時刻を今にし、ロックの印を消す（前の古い時刻や印で、すぐにロックしないように）
   writeStoredActivity(Date.now());
+  setLockMark(false);
   afterSignIn(data.email);
 }
 
@@ -3953,6 +3970,8 @@ async function afterSignIn(email) {
     showCloudLoading(`2段階認証の状態を確かめられませんでした。\n${cloudErrorText(mfa.error)}\n直したら「もう一度読み込む」を押してください。`, true);
     return;
   }
+  // 自動ロックで、通信できなくてもコードの欄を出せるよう、確認済みの登録を覚えておく
+  knownVerifiedFactors = mfa.data.verifiedFactors;
   if (mfa.data.aal2) {
     startSignedIn();
   } else if (mfa.data.verifiedFactors.length) {
@@ -4006,6 +4025,7 @@ function showCodeStage(factors) {
   }));
   document.getElementById("mfaFactorPicker").hidden = factors.length < 2;
   document.getElementById("mfaCode").value = "";
+  document.getElementById("mfaCodeLogout").textContent = "別のアカウントでログインする";
   showLoginStage("code", "");
 }
 
@@ -4032,6 +4052,17 @@ async function submitMfaCode(event) {
     return;
   }
   hideLoginScreen();
+  // 自動ロックで画面をおおっていたときは、続きから使う
+  if (lockResume) {
+    const resume = lockResume;
+    lockResume = null;
+    screenLocked = false;
+    setLockMark(false);
+    lastActivityAt = Date.now();
+    writeStoredActivity(lastActivityAt);
+    resume();
+    return;
+  }
   startSignedIn();
 }
 
@@ -4268,6 +4299,8 @@ async function startCloud() {
     return;
   }
   if (!data) {
+    // ログインが無ければ、ロックの印は要らない（ログインし直すときに、パスワードとコードを入れるため）
+    setLockMark(false);
     showLoginStage("password", "");
     const locked = takeAutoLockNotice();
     if (locked) setLoginMessage(`30分間操作がなかったため、自動でログアウトしました（顧客の情報を守るため）。もう一度ログインしてください。${locked === "editing" ? "\n入力の途中だった内容は、保存されていません。" : ""}`, false);
@@ -4275,7 +4308,7 @@ async function startCloud() {
   }
   takeAutoLockNotice();
   // 前の操作から時間がたっていれば、データを読み込む前にログアウトする（開き直したページで、ログイン画面が出る）
-  if (await lockIfIdleAtStart()) return;
+  if (await lockIfIdleAtStart(data.email)) return;
   // ここから使い始めるので、操作した時刻を今にする
   writeStoredActivity(Date.now());
   afterSignIn(data.email);
@@ -4301,6 +4334,8 @@ const LAST_ACTIVITY_STORAGE_KEY = "lastActivityAt";
 const ACTIVITY_WRITE_MS = 15 * 1000;
 let lastActivityAt = Date.now();
 let lastActivityWrittenAt = 0;
+// 自動ロックで画面をおおっている間は true
+let screenLocked = false;
 
 function readStoredActivity() {
   try {
@@ -4321,6 +4356,9 @@ function writeStoredActivity(time) {
 }
 
 function recordActivity() {
+  // ロックの画面での操作は数えない（コードを入れずに、時刻だけ新しくして開き直すと、ロックを通り抜けられてしまうため）。
+  // 時刻を今にするのは、コードが通ったときだけ
+  if (screenLocked) return;
   lastActivityAt = Date.now();
   if (lastActivityAt - lastActivityWrittenAt >= ACTIVITY_WRITE_MS) writeStoredActivity(lastActivityAt);
 }
@@ -4334,9 +4372,127 @@ function idleMs() {
   return Date.now() - Math.max(lastActivityAt, readStoredActivity());
 }
 
+// ---- 保存できていない変更があるタブを、ほかのタブに伝える ----
+// ログアウトはこの端末のブラウザ全体に効くので、どれか1つのタブに保存できていない変更があれば、どのタブもログアウトしない。
+// 残すのは「タブの番号 → 時刻」だけ（顧客のデータは入れない）
+const UNSENT_TABS_STORAGE_KEY = "unsentTabs";
+// 閉じ方によっては印が残るので、これより古い印は数えない（保存できていない間は、1分ごとに時刻を新しくする）
+const UNSENT_TAB_STALE_MS = 30 * 60 * 1000;
+const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+let publishedUnsent = false;
+
+function readUnsentTabs() {
+  try {
+    const v = JSON.parse(localStorage.getItem(UNSENT_TABS_STORAGE_KEY) || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeUnsentTab(on) {
+  try {
+    const tabs = readUnsentTabs();
+    if (on) tabs[TAB_ID] = Date.now();
+    else delete tabs[TAB_ID];
+    if (Object.keys(tabs).length) localStorage.setItem(UNSENT_TABS_STORAGE_KEY, JSON.stringify(tabs));
+    else localStorage.removeItem(UNSENT_TABS_STORAGE_KEY);
+    publishedUnsent = on;
+  } catch {
+    // 伝えられないときは、このタブの中だけで判定する
+  }
+}
+
+// 保存の状態が変わるたびに呼ぶ（showCloudStatus から）
+function publishUnsentState() {
+  const unsent = hasUnsentCloudChanges();
+  if (unsent !== publishedUnsent) writeUnsentTab(unsent);
+}
+window.addEventListener("pagehide", () => {
+  if (publishedUnsent) writeUnsentTab(false);
+});
+// 「戻る」でページがそのまま戻ったときは、消した印を付け直す
+window.addEventListener("pageshow", e => {
+  if (e.persisted) publishUnsentState();
+});
+
+// ほかのタブに、保存できていない変更があるか
+function otherTabHasUnsent() {
+  const now = Date.now();
+  return Object.entries(readUnsentTabs()).some(([id, time]) => id !== TAB_ID && now - Number(time) < UNSENT_TAB_STALE_MS);
+}
+
+// ---- ロックする ----
+// 画面をおおっている間（認証アプリのコードを入れると、続きから使える）は、再開したときの処理を入れておく
+let lockResume = null;
+// ログインしたときに読んだ、確認済みの登録（自動ロックのコードの欄に使う）
+let knownVerifiedFactors = [];
+// ロックのコードの欄を出せなかったときに、「もう一度試す」で使う
+let lockRetry = null;
+// ログアウトしないでロックしたことの印（この端末のブラウザに残す）。印があるあいだは、開き直しても、ほかのタブでも、
+// 操作した時刻に関係なくコードを求める（時刻の扱いを間違えても、ロックを通り抜けられないように）
+const LOCK_MARK_STORAGE_KEY = "screenLock";
+
+function hasLockMark() {
+  try {
+    return !!localStorage.getItem(LOCK_MARK_STORAGE_KEY);
+  } catch {
+    return false;
+  }
+}
+
+function setLockMark(on) {
+  try {
+    if (on) localStorage.setItem(LOCK_MARK_STORAGE_KEY, String(Date.now()));
+    else localStorage.removeItem(LOCK_MARK_STORAGE_KEY);
+  } catch {
+    // 残せないときは、このタブの中だけでロックする
+  }
+}
+
+// ほかのタブがロックしたら、このタブもすぐにロックする
+window.addEventListener("storage", e => {
+  if (e.key === LOCK_MARK_STORAGE_KEY && e.newValue) autoLockIfIdle();
+});
+
+// 編集フォームを開いていたか（ロックの理由の知らせに使う。検索欄に選択があるだけでは数えない）
+function editingAnything() {
+  return editingReservationId !== null || editingShipmentId !== null || editingCustomerId !== null;
+}
+
+// 画面をおおって、データを見えなくする（知らせにも名前が出るので消す）
+function coverScreen() {
+  screenLocked = true;
+  showCloudLoading("しばらく操作がなかったため、画面を隠しています…", false);
+  document.getElementById("toastArea").replaceChildren();
+}
+
+// ログアウトせずに画面をおおったまま、認証アプリのコードで再開できるようにする
+async function showLockCodeStage(onResume, message) {
+  screenLocked = true;
+  lockResume = onResume;
+  setLockMark(true);
+  const { data, error } = await listMfaFactors();
+  // 通信できなくても、ログインしたときに読んだ登録があれば、それでコードの欄を出す
+  // （電波が悪くて保存できていないときに、開き直すしかなくなり、その変更が消えないように）
+  const factors = !error && data.verified.length ? data.verified : knownVerifiedFactors;
+  if (!factors.length) {
+    // ロックの印は残すので、開き直しても、もう一度コードを求める。開き直さずに「もう一度試す」でもやり直せる
+    lockRetry = () => showLockCodeStage(onResume, message);
+    showCloudLoading(`しばらく操作がなかったため、画面を隠しました。続けるためのコードの確認を始められませんでした。${error ? `\n${cloudErrorText(error)}` : ""}\nインターネットにつながっているか確かめて、「もう一度試す」を押してください。`, false);
+    document.getElementById("lockRetryButton").hidden = false;
+    return;
+  }
+  lockRetry = null;
+  showCodeStage(factors);
+  setStageMessage("code", message, false);
+  // ロックのときは、ボタンの意味を合わせる
+  document.getElementById("mfaCodeLogout").textContent = "ログアウトする（保存できていない変更は消えます）";
+}
+
 // ログアウトして、ログイン画面を出す（画面のデータを残さないよう、ページを開き直す）。
-// ログアウトに失敗したら、開き直さずに知らせる（ログインが残ったまま開き直すと、そのまま使えてしまうため）
-async function lockNow(wasEditing) {
+// ログアウトの通信に失敗しても、この端末のログインが消えていれば開き直す。ログインが残っていれば、画面をおおったまま、コードで再開できるようにする
+async function lockBySignOut(onResume, wasEditing) {
   cloudSigningOut = true;
   try {
     sessionStorage.setItem(AUTO_LOCK_NOTICE_KEY, wasEditing ? "editing" : "1");
@@ -4345,21 +4501,49 @@ async function lockNow(wasEditing) {
   }
   const { error } = await signOutSupabase();
   if (error) {
-    cloudSigningOut = false;
-    notify(`自動でログアウトできませんでした。手で「ログアウト」を押してください。\n${cloudErrorText(error)}`, "error", 15000);
-    return false;
+    const user = await getSupabaseUser();
+    if (user.error || user.data) {
+      cloudSigningOut = false;
+      takeAutoLockNotice();
+      await showLockCodeStage(onResume, "しばらく操作がなかったため、画面を隠しました（ログアウトはできませんでした）。続けるには、認証アプリのコードを入れてください。");
+      return;
+    }
   }
   location.reload();
-  return true;
 }
 
 async function autoLockIfIdle() {
-  if (!cloudReady || cloudSigningOut) return;
-  if (idleMs() < AUTO_LOCK_MS) return;
-  // 保存できていない変更があるときは、ロックしない（ログアウトすると、その変更が消えるため）。
-  // 送り終えたら、次の確認でロックする。送れないままのときは、画面の上の赤い枠で知らせているが、ロックもされない
-  if (hasUnsentCloudChanges()) return;
-  await lockNow(userIsEditing());
+  // 保存できていない間は、ほかのタブに伝える印の時刻を新しくする（古い印として無視されないように。ロック中も続ける）
+  if (cloudReady && hasUnsentCloudChanges()) writeUnsentTab(true);
+  if (!cloudReady || cloudSigningOut || lockResume || screenLocked) return;
+  // ほかのタブがロックしていれば、時間に関係なくロックする
+  if (idleMs() < AUTO_LOCK_MS && !hasLockMark()) return;
+  const wasEditing = editingAnything();
+  coverScreen();
+  // 保存できていない変更があるとき（このタブでも、ほかのタブでも）は、ログアウトしない（ログアウトすると、その変更が消えるため）。
+  // 画面をおおうだけにして、認証アプリのコードを入れたら、続きから使えるようにする
+  if (hasUnsentCloudChanges() || otherTabHasUnsent()) {
+    await showLockCodeStage(resumeInPlace, "しばらく操作がなかったため、画面を隠しました。保存できていない変更があるため、ログアウトはしていません。続けるには、認証アプリのコードを入れてください。");
+    return;
+  }
+  await lockBySignOut(resumeInPlace, wasEditing);
+}
+
+// ロックのコードの欄を出せなかったときの「もう一度試す」
+function retryLockCodeStage() {
+  if (!lockRetry) return;
+  const retry = lockRetry;
+  lockRetry = null;
+  document.getElementById("lockRetryButton").hidden = true;
+  retry();
+}
+// つながり直したら、自分でやり直す
+window.addEventListener("online", retryLockCodeStage);
+
+// 画面をおおう前の続きから使う（おおっている間は読み直していないので、1回読み直す）
+function resumeInPlace() {
+  hideCloudLoading();
+  refreshFromCloud(false);
 }
 
 // スマホでは、画面を消している間はタイマーが止まるので、画面に戻ったとき・「戻る」で戻ったときにも確かめる
@@ -4371,16 +4555,23 @@ window.addEventListener("pageshow", e => {
   if (e.persisted) autoLockIfIdle();
 });
 
-// ページを開いたときに、ログインが残っていても、前の操作から決めた時間がたっていればログアウトする
+// ページを開いたときに、ログインが残っていても、前の操作から決めた時間がたっていればロックする
 // （開き直すだけでロックを通り抜けないように。iPhone のホーム画面のアプリは、裏に回すと閉じられて開き直しになりやすい）。
-// 時刻が残っていない（初めて開いた）ときは、ロックしない
-async function lockIfIdleAtStart() {
+// 時刻が残っていない（初めて開いた）ときは、ロックしない。ロックしたら true（データは読み込まない）
+async function lockIfIdleAtStart(email) {
   const stored = readStoredActivity();
-  if (!stored || Date.now() - stored < AUTO_LOCK_MS) return false;
-  if (await lockNow(false)) return true;
-  // ログアウトできなかったときは、データを読み込まずに止める（時間がたった端末で、データを出さないため）
-  takeAutoLockNotice();
-  showCloudLoading("しばらく操作がなかったため、ログアウトしようとしましたが、できませんでした。「もう一度読み込む」を押してください。", true);
+  if (!hasLockMark() && (!stored || Date.now() - stored < AUTO_LOCK_MS)) return false;
+  const resume = () => afterSignIn(email);
+  // ロックの印があれば、時刻に関係なくコードを求める
+  if (hasLockMark()) {
+    await showLockCodeStage(resume, "ロックしています。続けるには、認証アプリのコードを入れてください。");
+    return true;
+  }
+  if (otherTabHasUnsent()) {
+    await showLockCodeStage(resume, "しばらく操作がなかったため、ロックしています。ほかのタブに保存できていない変更があるため、ログアウトはしていません。続けるには、認証アプリのコードを入れてください。");
+    return true;
+  }
+  await lockBySignOut(resume, false);
   return true;
 }
 
@@ -4937,7 +5128,7 @@ const PAGE_ACTIONS = {
   exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
   logout, printCurrentList, retryCloud, saveCustomer, showMoreRows,
   toggleMfaPanel, startAddMfaFactor, cancelAddMfaFactor, removeMfaFactorById,
-  openReservationForm, openShipmentForm, quickStatusFilter, showBackupPanel, showShippedShortage, toggleFab, toggleFilters,
+  openReservationForm, openShipmentForm, retryLockCodeStage, quickStatusFilter, showBackupPanel, showShippedShortage, toggleFab, toggleFilters,
   setStockMode: mode => setStockMode(mode),
   showView: id => onTabClick(id),
   openImportFile: () => document.getElementById("importFile").click(),

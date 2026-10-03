@@ -568,6 +568,7 @@ function fillOptions() {
     const e = document.getElementById(id);
     e.innerHTML = varieties.map(v => `<option>${v}</option>`).join("");
   });
+  document.getElementById("shipmentFilterVariety").innerHTML = '<option value="">すべて</option>' + varieties.map(v => `<option value="${v}">${varietyLabel(v)}</option>`).join("") + '<option value="__none">品種なし</option>';
   document.getElementById("filterVariety").innerHTML = '<option value="">すべて</option>' + varieties.map(v => `<option>${v}</option>`).join("");
   document.getElementById("month").innerHTML = months.map(m => `<option>${m}</option>`).join("");
   document.getElementById("filterMonth").innerHTML = '<option value="">すべて</option>' + months.map(m => `<option>${m}</option>`).join("");
@@ -2023,6 +2024,7 @@ function commitShipment(s) {
   // 同じ顧客の出荷を続けて登録しやすいように、顧客の選択は残す
   clearShipmentForm(s.customerId);
   refreshAll();
+  notifyIfShipmentHidden(s);
 }
 
 function editShipment(i) {
@@ -2084,18 +2086,68 @@ function deleteShipment(i) {
   });
 }
 
+// 出荷日（「2026-10-01」）の年月（「2026-10」）。形が違えば ""
+function shipmentMonthKey(s) {
+  const m = /^(\d{4}-\d{2})-\d{2}$/.exec(String(s.date || ""));
+  return m ? m[1] : "";
+}
+
+// 出荷一覧の「出荷した年月」の選択肢を、出荷のある年月（新しい順）で作り直す（選んでいる年月は、出荷が無くなっても残す）
+function refreshShipmentMonthOptions() {
+  const select = document.getElementById("shipmentFilterMonth");
+  const current = select.value;
+  const keys = new Set(shipments.map(shipmentMonthKey).filter(Boolean));
+  if (current) keys.add(current);
+  const label = k => `${k.slice(0, 4)}年${Number(k.slice(5, 7))}月`;
+  const html = '<option value="">すべて</option>' + [...keys].sort().reverse().map(k => `<option value="${esc(k)}">${esc(label(k))}</option>`).join("");
+  // 中身が変わったときだけ作り直す（iPhone で選択肢を開いている間に作り直すと、一覧が閉じることがあるため）
+  if (select.dataset.optionsHtml === html) return;
+  select.dataset.optionsHtml = html;
+  select.innerHTML = html;
+  select.value = current;
+}
+
+// 出荷一覧の検索・品種・年月の条件に合うか
+function shipmentMatchesFilters(s) {
+  const q = document.getElementById("shipmentSearch").value.trim();
+  const fv = document.getElementById("shipmentFilterVariety").value;
+  const fm = document.getElementById("shipmentFilterMonth").value;
+  // 「品種なし」（__none）は、品種が入っていない出荷
+  if (fv && (fv === "__none" ? !!s.variety : s.variety !== fv)) return false;
+  if (fm && shipmentMonthKey(s) !== fm) return false;
+  if (q) {
+    const c = customerFor(s);
+    // 電話番号は、文字のまま（2けた以下やハイフン入りでも）と、数字だけの両方で比べる（予約一覧と同じ）
+    if (!listSearchMatches(q, [c?.name, s.name, c?.furigana, c?.phone, s.memo], [c?.phone])) return false;
+  }
+  return true;
+}
+
+// 出荷一覧で、検索・絞り込みを使っているか
+function shipmentFiltersActive() {
+  return ["shipmentSearch", "shipmentFilterVariety", "shipmentFilterMonth"].some(id => document.getElementById(id).value.trim());
+}
+
 function getVisibleShipments() {
   const mode = document.getElementById("shipmentSort").value;
-  return shipments.map((s, i) => ({ s, i })).sort(shipmentComparator(mode));
+  return shipments.map((s, i) => ({ s, i })).filter(({ s }) => shipmentMatchesFilters(s)).sort(shipmentComparator(mode));
+}
+
+// 保存した出荷が、今の検索・絞り込みでは一覧に出ないときに知らせる（見つからずに、もう一度登録しないように）
+function notifyIfShipmentHidden(s) {
+  if (withCustomerLookup(() => shipmentMatchesFilters(s))) return;
+  notify("この出荷は、今の検索・絞り込みの条件に合わないため、出荷一覧には出ません。検索欄や品種・年月の条件を消すと見られます。", "info", 10000);
 }
 
 function displayShipments() {
   displayVarietyMismatches();
   const b = document.getElementById("shipmentList");
   b.innerHTML = "";
+  refreshShipmentMonthOptions();
   const visible = getVisibleShipments();
   const shown = limitRows(visible, "shipments");
-  showListMore("shipments", shown.length, visible.length, "");
+  const hidden = shipments.length - visible.length;
+  showListMore("shipments", shown.length, visible.length, hidden ? `検索・絞り込みの条件に合わない出荷${hidden}件は隠しています。` : "");
   shown.forEach(({ s, i }) => {
     const tr = document.createElement("tr");
     [s.date, varietyLabel(s.variety), customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
@@ -2113,7 +2165,7 @@ function displayShipments() {
     b.appendChild(tr);
   });
   if (!b.children.length) {
-    b.innerHTML = '<tr><td colspan="6" class="empty-message">まだ出荷の記録がありません</td></tr>';
+    b.innerHTML = `<tr><td colspan="6" class="empty-message">${shipments.length ? "条件に合う出荷がありません" : "まだ出荷の記録がありません"}</td></tr>`;
   }
   const r = getReservedTotals();
   const s = getShippedTotals();
@@ -2183,8 +2235,12 @@ function customerStats(c, groups) {
   const reserved = sumKg(rs);
   const shipped = sumKg(ss);
   const { remaining, over, items, overItems } = unshippedByVariety(rs, ss);
+  // 最後の出荷日（「2026-10-01」の形の出荷日のうち、今日までで、いちばん新しいもの。無ければ ""）。
+  // 先の日付で入れた出荷は数えない（まだ届いていないのに、最近買った人に見えないように）
+  const today = todayString();
+  const lastShip = ss.reduce((last, s) => (shipmentMonthKey(s) && s.date <= today && s.date > last ? s.date : last), "");
   return {
-    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items, overItems
+    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items, overItems, lastShip
   };
 }
 
@@ -2197,13 +2253,22 @@ function getVisibleCustomers() {
     // 電話番号は、文字のまま（2けた以下やハイフン入りでも）と、数字だけの両方で比べる
     .filter(({ c }) => listSearchMatches(q, [c.name, c.furigana, c.phone, c.address], [c.phone]))
     .map(x => ({ ...x, s: customerStats(x.c, groups) }));
+  // ふりがな（無ければ名前）の順
+  const byReading = (a, b) => jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || ""));
   arr.sort((a, b) => {
     if (sort === "recent") {
       // 「新しい順（登録）」：あとから登録した顧客を上に
       return b.originalIndex - a.originalIndex;
     }
+    if (sort === "lastShipment") {
+      // 「最後の出荷日が古い順」：しばらく買っていない人を上に。出荷の無い人は最後に
+      const noShipA = a.s.lastShip ? 0 : 1;
+      const noShipB = b.s.lastShip ? 0 : 1;
+      if (noShipA !== noShipB) return noShipA - noShipB;
+      return a.s.lastShip.localeCompare(b.s.lastShip) || byReading(a, b);
+    }
     if (sort === "reservations") {
-      return b.s.reserved - a.s.reserved || jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || ""));
+      return b.s.reserved - a.s.reserved || byReading(a, b);
     }
     return jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || "")) || jaCompare(String(a.c.name || ""), String(b.c.name || ""));
   });
@@ -2216,7 +2281,7 @@ function displayCustomers() {
   showListMore("customers", arr.length, visible.length, "");
   // 同じ名前の人を番号で見分けているときは、予約・出荷の顧客の欄と同じ番号を付ける（電話・住所は一覧の別の欄にあるので添えない）
   const names = customerDisplayNames();
-  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
+  document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td data-label="最後の出荷日">${esc(s.lastShip) || "—"}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
   // ボタンの処理は onclick 属性に顧客の id を書き込まず、ここで結びつける
   // （読み込んだバックアップの id に細工があっても、スクリプトとして動かないようにするため）
   const rows = document.getElementById("customerList").querySelectorAll("tr");
@@ -2655,13 +2720,20 @@ function showCustomerDetail(id) {
   const list = (o, label = k => k) => Object.entries(o).map(([k, v]) => `<li>${esc(label(k))}：${formatKg(v)}</li>`).join("") || "<li>なし</li>";
   const d = document.getElementById("customerDetail");
   d.hidden = false;
-  d.innerHTML = `<h2>${esc(c.name + customerDisplayNames().get(c.customerId).number)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div><div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
+  d.innerHTML = `<h2>${esc(c.name + customerDisplayNames().get(c.customerId).number)} の詳細</h2><div class="detail-grid"><div class="detail-card"><p><b>電話番号：</b>${esc(c.phone) || "未登録"}</p><p><b>住所：</b>${esc(c.address) || "未登録"}</p><p><b>メモ：</b>${esc(c.memo) || "なし"}</p></div><div class="detail-card"><h3>取引状況</h3><p>予約合計：${formatKg(s.reserved)}</p><p>出荷済み：${formatKg(s.shipped)}</p><p>未出荷：${unshippedCell(s)}</p></div><div class="detail-card"><h3>予約（品種別）</h3><ul>${list(s.byV, varietyLabel)}</ul></div><div class="detail-card"><h3>予約（月別）</h3><ul>${list(s.month, monthLabel)}</ul></div><div class="detail-card"><h3>出荷（品種別）</h3><ul>${list(s.shipV, varietyLabel)}</ul></div></div>${shipmentHistoryHtml(s.ss)}<div class="doc-buttons"><button type="button" class="tool-button" data-doc="delivery">納品書を印刷</button><button type="button" class="tool-button" data-doc="invoice">請求書を印刷</button></div>${mergeFormHtml(c)}<button type="button" class="detail-close-button">詳細を閉じる</button>`;
   // 顧客の id は onclick 属性に書き込まず、ここで結びつける（id に細工があってもスクリプトとして動かないように）
   d.querySelectorAll("[data-doc]").forEach(btn => btn.onclick = () => printCustomerDoc(c.customerId, btn.dataset.doc));
   d.querySelector(".detail-close-button").onclick = () => d.hidden = true;
   const mergeButton = d.querySelector(".merge-button");
   if (mergeButton) mergeButton.onclick = () => mergeCustomer(c.customerId, document.getElementById("mergeTarget").value);
   d.scrollIntoView({ behavior: "smooth" });
+}
+
+// 顧客の詳細に出す、出荷の履歴（出荷日の新しい順）
+function shipmentHistoryHtml(ss) {
+  const sorted = [...ss].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  const rows = sorted.map(s => `<tr><td data-label="出荷日">${esc(s.date) || "日付なし"}</td><td data-label="品種">${esc(varietyLabel(s.variety))}</td><td data-label="kg">${formatKg(s.kg)}</td><td data-label="メモ">${esc(s.memo)}</td></tr>`).join("");
+  return `<div class="detail-card shipment-history"><h3>出荷の履歴（${ss.length}件）</h3>${rows ? `<div class="table-wrapper"><table class="card-table"><thead><tr><th>出荷日</th><th>品種</th><th>kg</th><th>メモ</th></tr></thead><tbody>${rows}</tbody></table></div>` : "<p>まだ出荷の記録がありません</p>"}</div>`;
 }
 
 // 顧客の詳細に出す「ほかの顧客とまとめる」欄。同じ人を2人分登録してしまったときに使う。
@@ -4325,13 +4397,14 @@ function exportVisibleReservationsCsv() {
 }
 
 function exportShipmentsCsv() {
-  const rows = getVisibleShipments().map(({ s }) => [s.date, s.variety, customerName(s), roundKg(s.kg), s.memo || ""]);
+  const rows = withCustomerLookup(getVisibleShipments).map(({ s }) => [s.date, s.variety, customerName(s), roundKg(s.kg), s.memo || ""]);
   if (!rows.length) {
     notify("書き出す出荷がありません", "warn");
     return;
   }
   downloadCsv(`shipments-${dateStamp()}.csv`, ["出荷日", "品種", "顧客", "kg", "メモ"], rows);
-  notify(`出荷${rows.length}件をCSVに書き出しました（表示中の並び順のとおり）`, "success");
+  const hidden = shipments.length - rows.length;
+  notify(`出荷${rows.length}件をCSVに書き出しました（表示中の検索・絞り込み・並び順のとおり）${hidden ? `。条件に合わない出荷${hidden}件は入っていません` : ""}`, hidden ? "info" : "success", hidden ? 10000 : undefined);
 }
 
 function exportCustomersCsv() {
@@ -4371,7 +4444,18 @@ window.addEventListener("beforeprint", () => {
   const el = document.getElementById("printTitle");
   // 予約一覧で出荷済みを隠しているときは、紙にもそのことを残す
   const status = document.getElementById("filterStatus").value;
-  const filterNote = sub && sub.id === "reservationsView" ? { [STATUS_FILTER_UNSHIPPED]: "（未出荷だけ）", [STATUS_FILTER_ACTIVE]: "（状態が出荷済み以外）" }[status] || "" : "";
+  let filterNote = sub && sub.id === "reservationsView" ? { [STATUS_FILTER_UNSHIPPED]: "（未出荷だけ）", [STATUS_FILTER_ACTIVE]: "（状態が出荷済み以外）" }[status] || "" : "";
+  // 出荷一覧を絞り込んでいるときは、その条件も紙に残す（一部だけを印刷したと分かるように）
+  if (sub && sub.id === "shipmentsView" && shipmentFiltersActive()) {
+    const parts = [];
+    const q = document.getElementById("shipmentSearch").value.trim();
+    const v = document.getElementById("shipmentFilterVariety");
+    const m = document.getElementById("shipmentFilterMonth");
+    if (q) parts.push(`検索「${q}」`);
+    if (v.value) parts.push(`品種：${v.options[v.selectedIndex].text}`);
+    if (m.value) parts.push(m.options[m.selectedIndex].text);
+    filterNote = `（${parts.join("・")}）`;
+  }
   if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}${filterNote}｜${todayString().replace(/-/g, "/")}`;
 });
 
@@ -4670,6 +4754,10 @@ document.getElementById("reservationSort").addEventListener("change", e => {
   save(RESERVATION_SORT_KEY, e.target.value);
   refreshAll();
 });
+["shipmentSearch", "shipmentFilterVariety", "shipmentFilterMonth"].forEach(id => document.getElementById(id).addEventListener("input", () => {
+  resetListLimit("shipments");
+  refreshAll();
+}));
 document.getElementById("shipmentSort").addEventListener("change", e => {
   resetListLimit("shipments");
   save(SHIPMENT_SORT_KEY, e.target.value);

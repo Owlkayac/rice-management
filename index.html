@@ -224,6 +224,12 @@
           <div id="varietyMismatchNotice" class="data-warning" role="status" hidden></div>
           <h2>出荷一覧</h2>
           <div class="filters">
+            <label for="shipmentSearch">顧客名・ふりがな・電話・メモで検索</label>
+            <input id="shipmentSearch" type="search" placeholder="顧客名・ふりがな・電話番号・メモの一部">
+            <label for="shipmentFilterVariety">品種</label>
+            <select id="shipmentFilterVariety"></select>
+            <label for="shipmentFilterMonth">出荷した年月</label>
+            <select id="shipmentFilterMonth"></select>
             <label for="shipmentSort">並び順</label>
             <select id="shipmentSort">
               <option value="recent">新しい順（登録）</option>
@@ -393,6 +399,7 @@
               <option value="name">顧客名</option>
               <option value="recent">新しい順（登録）</option>
               <option value="reservations">予約量順</option>
+              <option value="lastShipment">最後の出荷日が古い順（声かけ用）</option>
             </select>
           </div>
           <div class="list-tools">
@@ -410,6 +417,7 @@
                   <th>予約合計</th>
                   <th>出荷済み</th>
                   <th>未出荷</th>
+                  <th>最後の出荷日</th>
                   <th class="no-print">詳細</th>
                   <th class="no-print">編集</th>
                   <th class="no-print">削除</th>

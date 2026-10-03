@@ -10,7 +10,7 @@
     <!-- ほかのサイトへ移るときに、このページのアドレスを伝えない -->
     <meta name="referrer" content="no-referrer">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=31">
+    <link rel="stylesheet" href="style.css?v=32">
   </head>
   <body>
     <div class="container">
@@ -26,192 +26,429 @@
       </div>
       <p id="printTitle" class="print-only"></p>
       <nav class="view-tabs" role="tablist" aria-label="表示切り替え">
-        <button type="button" class="view-tab active" role="tab" aria-selected="true" aria-controls="reservationsView" data-view="reservationsView">予約登録・一覧</button>
-        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="dashboardView" data-view="dashboardView">ダッシュボード</button>
-        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="inventoryView" data-view="inventoryView">在庫管理</button>
-        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="shipmentsView" data-view="shipmentsView">出荷管理</button>
-        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="unshippedView" data-view="unshippedView">未出荷の顧客</button>
-        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="customersView" data-view="customersView">顧客管理</button>
+        <button type="button" class="view-tab active" role="tab" aria-selected="true" aria-controls="homeView" data-view="homeView"><span class="tab-icon" aria-hidden="true">🏠</span><span class="tab-label">ホーム</span></button>
+        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="ordersView" data-view="ordersView"><span class="tab-icon" aria-hidden="true">📝</span><span class="tab-label">注文</span></button>
+        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="peopleView" data-view="peopleView"><span class="tab-icon" aria-hidden="true">👥</span><span class="tab-label">顧客</span></button>
+        <button type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="settingsView" data-view="settingsView"><span class="tab-icon" aria-hidden="true">📦</span><span class="tab-label">在庫・設定</span></button>
       </nav>
-      <main id="reservationsView" class="view-panel">
-        <div class="form" id="reservationForm">
-          <div class="field">
-            <label for="variety">品種</label>
-            <select id="variety"></select>
+      <main id="homeView" class="view-panel">
+        <div class="home-head">
+          <h2>今日やること</h2>
+          <button type="button" class="home-add" data-action="openReservationForm">＋予約</button>
+        </div>
+        <p id="homeBackupRemind" class="backup-remind home-backup-remind no-print" hidden>
+          <span id="homeBackupRemindText"></span>
+          <button type="button" class="tool-button" data-action="showBackupPanel">バックアップへ</button>
+        </p>
+        <section class="home-section">
+          <h3>先に発送する人<small>入金済み・未出荷</small></h3>
+          <p class="home-pending">準備中です（入金の記録ができるようになったら、ここに出します）</p>
+        </section>
+        <section class="home-section">
+          <h3>未出荷の顧客<small>未出荷が多い順</small></h3>
+          <p id="homeUnshippedSummary" class="unshipped-summary"></p>
+          <div class="table-wrapper">
+            <table class="card-table">
+              <thead>
+                <tr>
+                  <th>顧客名</th>
+                  <th>品種ごとの残り</th>
+                  <th>電話番号</th>
+                  <th class="no-print">操作</th>
+                </tr>
+              </thead>
+              <tbody id="homeUnshippedList"></tbody>
+            </table>
           </div>
-          <div class="field">
-            <label for="month">月</label>
-            <select id="month"></select>
-          </div>
-          <div class="field">
-            <label for="name">顧客（名前・ふりがな・電話番号で探す）</label>
-            <div class="customer-picker">
-              <input id="name" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="nameSuggest" aria-describedby="namePicked customerLockNote" maxlength="200">
-              <button type="button" id="nameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
-              <ul id="nameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
+          <p id="homeUnshippedMore" class="home-more" hidden>
+            <button type="button" class="tool-button" data-action="showView" data-arg="unshippedView">未出荷の顧客をすべて見る</button>
+          </p>
+        </section>
+        <section class="home-section">
+          <h3>入金待ち<small>出荷済み・未入金</small></h3>
+          <p class="home-pending">準備中です（入金の記録ができるようになったら、ここに出します）</p>
+        </section>
+        <section class="home-section">
+          <h3>品種ごとの残り在庫<small id="homeStockBasis"></small></h3>
+          <div id="homeStock" class="home-stock"></div>
+        </section>
+      </main>
+
+      <main id="ordersView" class="view-panel" hidden>
+        <div class="sub-tabs" role="tablist" aria-label="注文の表示切り替え">
+          <button type="button" class="sub-tab active" role="tab" aria-selected="true" aria-controls="reservationsView" data-view="reservationsView">予約</button>
+          <button type="button" class="sub-tab" role="tab" aria-selected="false" aria-controls="shipmentsView" data-view="shipmentsView">出荷</button>
+          <button type="button" class="sub-tab" role="tab" aria-selected="false" aria-controls="dashboardView" data-view="dashboardView">集計</button>
+        </div>
+        <section id="reservationsView" class="sub-panel" role="tabpanel">
+          <div class="form" id="reservationForm">
+            <div class="field">
+              <label for="variety">品種</label>
+              <select id="variety"></select>
             </div>
-            <p id="nameSuggestStatus" class="visually-hidden" aria-live="polite"></p>
-            <p id="namePicked" class="customer-picked" hidden></p>
-            <small>名前・ふりがな・電話番号の一部を入れ、出てきた候補から選びます。初めての人は名前を入れたまま保存すると、顧客管理にも自動で登録されます。</small>
-            <p id="customerLockNote" class="field-warning" hidden></p>
-            <!-- 選んだ顧客の番号を持っておくための欄（画面には出さない） -->
-            <select id="customerSelect" hidden aria-hidden="true" tabindex="-1">
-              <option value="">新しい顧客（名前欄に入力）</option>
+            <div class="field">
+              <label for="month">月</label>
+              <select id="month"></select>
+            </div>
+            <div class="field">
+              <label for="name">顧客（名前・ふりがな・電話番号で探す）</label>
+              <div class="customer-picker">
+                <input id="name" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="nameSuggest" aria-describedby="namePicked customerLockNote" maxlength="200">
+                <button type="button" id="nameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
+                <ul id="nameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
+              </div>
+              <p id="nameSuggestStatus" class="visually-hidden" aria-live="polite"></p>
+              <p id="namePicked" class="customer-picked" hidden></p>
+              <small>名前・ふりがな・電話番号の一部で探して、候補から選びます。初めての人は、名前を入れて保存すると顧客管理にも登録されます。</small>
+              <p id="customerLockNote" class="field-warning" hidden></p>
+              <!-- 選んだ顧客の番号を持っておくための欄（画面には出さない） -->
+              <select id="customerSelect" hidden aria-hidden="true" tabindex="-1">
+                <option value="">新しい顧客（名前欄に入力）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="kg">重量（kg）</label>
+              <input id="kg" type="number" min="0.1" step="0.1" placeholder="例：5">
+            </div>
+            <div class="field">
+              <label for="channel">受付経路</label>
+              <select id="channel"></select>
+            </div>
+            <div class="form-actions">
+              <button id="submitButton" data-action="addReservation">予約を追加</button>
+              <button id="cancelEditButton" class="cancel-button" hidden data-action="cancelEdit">キャンセル</button>
+            </div>
+          </div>
+          <h2>予約一覧</h2>
+          <div class="quick-filters" role="group" aria-label="予約一覧のすばやい絞り込み">
+            <button type="button" class="quick-filter" id="quickFilterUnshipped" aria-pressed="true" data-action="quickStatusFilter" data-arg="unshipped">未出荷だけ</button>
+            <button type="button" class="quick-filter" id="quickFilterAll" aria-pressed="false" data-action="quickStatusFilter" data-arg="">すべて</button>
+          </div>
+          <div class="filters collapsible-filters" id="reservationFilters">
+            <label for="searchName">名前で検索</label>
+            <input id="searchName" type="search" placeholder="名前の一部を入力">
+            <button type="button" class="filters-toggle tool-button" id="reservationFiltersToggle" aria-expanded="false" aria-controls="reservationFiltersMore" data-action="toggleFilters">絞り込み・並び順</button>
+            <div class="filters-more" id="reservationFiltersMore">
+              <label for="filterVariety">品種</label>
+              <select id="filterVariety"></select>
+              <label for="filterMonth">月</label>
+              <select id="filterMonth"></select>
+              <label for="filterChannel">受付経路</label>
+              <select id="filterChannel"></select>
+              <label for="filterStatus">状態</label>
+              <select id="filterStatus"></select>
+              <label for="reservationSort">並び順</label>
+              <select id="reservationSort">
+                <option value="recent">新しい順（登録）</option>
+                <option value="month">月順</option>
+                <option value="variety">品種順</option>
+                <option value="name">顧客名順</option>
+                <option value="kg">量が多い順</option>
+              </select>
+            </div>
+          </div>
+          <div class="list-tools">
+            <button type="button" class="tool-button" data-action="exportReservationsCsv">表示中の一覧をCSVで保存</button>
+            <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
+          </div>
+          <div class="table-wrapper">
+            <table class="card-table">
+              <thead>
+                <tr>
+                  <th>品種</th>
+                  <th>月</th>
+                  <th>名前</th>
+                  <th>kg</th>
+                  <th>紐づく出荷</th>
+                  <th>受付経路</th>
+                  <th>状態</th>
+                  <th class="no-print">操作</th>
+                </tr>
+              </thead>
+              <tbody id="reservationList"></tbody>
+            </table>
+          </div>
+          <div id="reservationsMore" class="list-more no-print" hidden></div>
+        </section>
+        <section id="shipmentsView" class="sub-panel" role="tabpanel" hidden>
+          <h2>出荷登録</h2>
+          <div class="form" id="shipmentForm">
+            <div class="field">
+              <label for="shipmentVariety">品種</label>
+              <select id="shipmentVariety"></select>
+            </div>
+            <div class="field">
+              <label for="shipmentDate">出荷日</label>
+              <input id="shipmentDate" type="date">
+            </div>
+            <div class="field">
+              <label for="shipmentName">顧客（名前・ふりがな・電話番号で探す）</label>
+              <div class="customer-picker">
+                <input id="shipmentName" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipmentNameSuggest" aria-describedby="shipmentNamePicked" maxlength="200">
+                <button type="button" id="shipmentNameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
+                <ul id="shipmentNameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
+              </div>
+              <p id="shipmentNameSuggestStatus" class="visually-hidden" aria-live="polite"></p>
+              <p id="shipmentNamePicked" class="customer-picked" hidden></p>
+              <small>名前・ふりがな・電話番号の一部で探して、候補から選びます。初めての人は、名前を入れて保存すると顧客管理にも登録されます。</small>
+              <!-- 選んだ顧客の番号を持っておくための欄（画面には出さない） -->
+              <select id="shipmentCustomerSelect" hidden aria-hidden="true" tabindex="-1">
+                <option value="">新しい顧客（名前欄に入力）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="shipmentKg">重量（kg）</label>
+              <input id="shipmentKg" type="number" min="0.1" step="0.1" placeholder="例：20">
+            </div>
+            <div class="field">
+              <label for="shipmentMemo">メモ</label>
+              <input id="shipmentMemo" type="text" maxlength="5000">
+            </div>
+            <div class="field">
+              <label for="shipmentReservation">対象の予約</label>
+              <select id="shipmentReservation" disabled></select>
+            </div>
+            <div class="form-actions">
+              <button id="shipmentSubmitButton" data-action="addShipment">出荷を登録</button>
+              <button id="cancelShipmentEditButton" class="cancel-button" hidden data-action="cancelShipmentEdit">キャンセル</button>
+            </div>
+          </div>
+          <div id="varietyMismatchNotice" class="data-warning" role="status" hidden></div>
+          <h2>出荷一覧</h2>
+          <div class="filters">
+            <label for="shipmentSort">並び順</label>
+            <select id="shipmentSort">
+              <option value="recent">新しい順（登録）</option>
+              <option value="dateDesc">出荷日が新しい順</option>
+              <option value="dateAsc">出荷日が古い順</option>
+              <option value="name">顧客名順</option>
             </select>
           </div>
-          <div class="field">
-            <label for="kg">重量（kg）</label>
-            <input id="kg" type="number" min="0.1" step="0.1" placeholder="例：5">
+          <div class="list-tools">
+            <button type="button" class="tool-button" data-action="exportShipmentsCsv">表示中の一覧をCSVで保存</button>
+            <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
           </div>
-          <div class="field">
-            <label for="channel">受付経路</label>
-            <select id="channel"></select>
+          <div class="table-wrapper">
+            <table class="card-table">
+              <thead>
+                <tr>
+                  <th>出荷日</th>
+                  <th>品種</th>
+                  <th>顧客</th>
+                  <th>kg</th>
+                  <th>メモ</th>
+                  <th class="no-print">操作</th>
+                </tr>
+              </thead>
+              <tbody id="shipmentList"></tbody>
+            </table>
           </div>
-          <div class="form-actions">
-            <button id="submitButton" data-action="addReservation">予約を追加</button>
-            <button id="cancelEditButton" class="cancel-button" hidden data-action="cancelEdit">キャンセル</button>
+          <div id="shipmentsMore" class="list-more no-print" hidden></div>
+        </section>
+        <section id="dashboardView" class="sub-panel" role="tabpanel" hidden>
+          <div class="dashboard-cards">
+            <section class="total-card">
+              <p>現在の総予約量</p>
+              <strong id="dashboardTotal">0kg</strong>
+            </section>
+            <section class="total-card inventory-card">
+              <p>総在庫量</p>
+              <strong id="dashboardInventory">0kg</strong>
+              <small id="dashboardShippable" class="card-sub"></small>
+            </section>
+            <section class="total-card shipment-card">
+              <p>総出荷量</p>
+              <strong id="dashboardShipments">0kg</strong>
+            </section>
+            <section class="total-card remaining-card">
+              <p>未出荷量</p>
+              <strong id="dashboardUnshippedTotal">0kg</strong>
+              <small id="dashboardUnshippedNote" class="over-shipped" hidden></small>
+            </section>
           </div>
-        </div>
-        <h2>予約一覧</h2>
-        <div class="filters">
-          <label for="searchName">名前で検索</label>
-          <input id="searchName" type="search" placeholder="名前の一部を入力">
-          <label for="filterVariety">品種</label>
-          <select id="filterVariety"></select>
-          <label for="filterMonth">月</label>
-          <select id="filterMonth"></select>
-          <label for="filterChannel">受付経路</label>
-          <select id="filterChannel"></select>
-          <label for="filterStatus">状態</label>
-          <select id="filterStatus"></select>
-          <label for="reservationSort">並び順</label>
-          <select id="reservationSort">
-            <option value="recent">新しい順（登録）</option>
-            <option value="month">月順</option>
-            <option value="variety">品種順</option>
-            <option value="name">顧客名順</option>
-            <option value="kg">量が多い順</option>
-          </select>
-        </div>
-        <div class="list-tools">
-          <button type="button" class="tool-button" data-action="exportReservationsCsv">表示中の一覧をCSVで保存</button>
-          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
-        </div>
-        <div class="table-wrapper">
-          <table class="card-table">
-            <thead>
-              <tr>
-                <th>品種</th>
-                <th>月</th>
-                <th>名前</th>
-                <th>kg</th>
-                <th>紐づく出荷</th>
-                <th>受付経路</th>
-                <th>状態</th>
-                <th class="no-print">操作</th>
-              </tr>
-            </thead>
-            <tbody id="reservationList"></tbody>
-          </table>
-        </div>
-        <div id="reservationsMore" class="list-more no-print" hidden></div>
-        <h2>月別合計</h2>
-        <div id="summary"></div>
+          <h2>品種別・月別予約量</h2>
+          <div class="dashboard-table-wrapper">
+            <table class="dashboard-table">
+              <thead>
+                <tr>
+                  <th>品種＼月</th>
+                  <th>1月</th>
+                  <th>2月</th>
+                  <th>3月</th>
+                  <th>4月</th>
+                  <th>5月</th>
+                  <th>6月</th>
+                  <th>7月</th>
+                  <th>8月</th>
+                  <th>9月</th>
+                  <th>10月</th>
+                  <th>11月</th>
+                  <th>12月</th>
+                  <th>合計</th>
+                </tr>
+              </thead>
+              <tbody id="dashboardTableBody"></tbody>
+            </table>
+          </div>
+          <p id="dashboardNote" class="dashboard-note" hidden></p>
+          <h2>月別合計</h2>
+          <div id="summary"></div>
+          <h2>出荷集計</h2>
+          <div class="table-wrapper">
+            <table class="shipment-summary-table">
+              <thead>
+                <tr>
+                  <th>品種</th>
+                  <th>在庫量(精米前)</th>
+                  <th>出荷できる量</th>
+                  <th>予約量</th>
+                  <th>出荷量</th>
+                  <th>未出荷</th>
+                </tr>
+              </thead>
+              <tbody id="shipmentSummaryBody"></tbody>
+            </table>
+          </div>
+          <div class="dashboard-split">
+            <section>
+              <h2>受付経路別の予約</h2>
+              <div class="table-wrapper">
+                <table class="summary-table">
+                  <thead>
+                    <tr>
+                      <th>受付経路</th>
+                      <th>件数</th>
+                      <th>予約量</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashboardChannelBody"></tbody>
+                </table>
+              </div>
+            </section>
+            <section>
+              <h2>状態別の予約</h2>
+              <div class="table-wrapper">
+                <table class="summary-table">
+                  <thead>
+                    <tr>
+                      <th>状態</th>
+                      <th>件数</th>
+                      <th>予約量</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashboardStatusBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
       </main>
 
-      <main id="dashboardView" class="view-panel" hidden>
-        <div class="dashboard-cards">
-          <section class="total-card">
-            <p>現在の総予約量</p>
-            <strong id="dashboardTotal">0kg</strong>
-          </section>
-          <section class="total-card inventory-card">
-            <p>総在庫量</p>
-            <strong id="dashboardInventory">0kg</strong>
-            <small id="dashboardShippable" class="card-sub"></small>
-          </section>
-          <section class="total-card shipment-card">
-            <p>総出荷量</p>
-            <strong id="dashboardShipments">0kg</strong>
-          </section>
-          <section class="total-card remaining-card">
-            <p>未出荷量</p>
-            <strong id="dashboardUnshippedTotal">0kg</strong>
-            <small id="dashboardUnshippedNote" class="over-shipped" hidden></small>
-          </section>
-          <section class="total-card customer-card">
-            <p>顧客数</p>
-            <strong id="dashboardCustomers">0人</strong>
-          </section>
-          <section class="total-card customer-card">
-            <p>予約のある顧客数</p>
-            <strong id="dashboardReservationCustomerCount">0人</strong>
-          </section>
-          <section class="total-card customer-card">
-            <p>出荷のある顧客数</p>
-            <strong id="dashboardShipmentCustomerCount">0人</strong>
-          </section>
+      <main id="peopleView" class="view-panel" hidden>
+        <div class="sub-tabs" role="tablist" aria-label="顧客の表示切り替え">
+          <button type="button" class="sub-tab active" role="tab" aria-selected="true" aria-controls="customersView" data-view="customersView">顧客管理</button>
+          <button type="button" class="sub-tab" role="tab" aria-selected="false" aria-controls="unshippedView" data-view="unshippedView">未出荷の顧客</button>
         </div>
-        <h2>品種別・月別予約量</h2>
-        <div class="dashboard-table-wrapper">
-          <table class="dashboard-table">
-            <thead>
-              <tr>
-                <th>品種＼月</th>
-                <th>1月</th>
-                <th>2月</th>
-                <th>3月</th>
-                <th>4月</th>
-                <th>5月</th>
-                <th>6月</th>
-                <th>7月</th>
-                <th>8月</th>
-                <th>9月</th>
-                <th>10月</th>
-                <th>11月</th>
-                <th>12月</th>
-                <th>合計</th>
-              </tr>
-            </thead>
-            <tbody id="dashboardTableBody"></tbody>
-          </table>
-        </div>
-        <p id="dashboardNote" class="dashboard-note" hidden></p>
-        <div class="dashboard-split">
-          <section>
-            <h2>受付経路別の予約</h2>
-            <div class="table-wrapper">
-              <table class="summary-table">
-                <thead>
-                  <tr>
-                    <th>受付経路</th>
-                    <th>件数</th>
-                    <th>予約量</th>
-                  </tr>
-                </thead>
-                <tbody id="dashboardChannelBody"></tbody>
-              </table>
+        <section id="customersView" class="sub-panel" role="tabpanel">
+          <h2>顧客管理</h2>
+          <div class="form customer-form">
+            <div class="field">
+              <label for="customerName">顧客名（必須）</label>
+              <input id="customerName" type="text" placeholder="例：山田太郎" maxlength="200">
             </div>
-          </section>
-          <section>
-            <h2>状態別の予約</h2>
-            <div class="table-wrapper">
-              <table class="summary-table">
-                <thead>
-                  <tr>
-                    <th>状態</th>
-                    <th>件数</th>
-                    <th>予約量</th>
-                  </tr>
-                </thead>
-                <tbody id="dashboardStatusBody"></tbody>
-              </table>
+            <div class="field">
+              <label for="customerFurigana">ふりがな</label>
+              <input id="customerFurigana" type="text" placeholder="例：やまだたろう" maxlength="200">
             </div>
+            <div class="field">
+              <label for="customerPhone">電話番号</label>
+              <input id="customerPhone" type="tel" placeholder="例：090-0000-0000" maxlength="50">
+            </div>
+            <div class="field">
+              <label for="customerAddress">住所</label>
+              <input id="customerAddress" type="text" placeholder="例：東京都" maxlength="1000">
+            </div>
+            <div class="field">
+              <label for="customerMemo">メモ</label>
+              <input id="customerMemo" type="text" maxlength="5000">
+            </div>
+            <div class="form-actions">
+              <button id="customerSubmitButton" data-action="saveCustomer">顧客を登録</button>
+              <button id="cancelCustomerEditButton" class="cancel-button" hidden data-action="cancelCustomerEdit">キャンセル</button>
+            </div>
+          </div>
+          <div class="filters">
+            <label for="customerSearch">顧客名検索</label>
+            <input id="customerSearch" type="search">
+            <label for="customerSort">並び順</label>
+            <select id="customerSort">
+              <option value="name">顧客名</option>
+              <option value="recent">新しい順（登録）</option>
+              <option value="reservations">予約量順</option>
+            </select>
+          </div>
+          <div class="list-tools">
+            <button type="button" class="tool-button" data-action="exportCustomersCsv">表示中の一覧をCSVで保存</button>
+            <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
+          </div>
+          <div class="table-wrapper">
+            <table class="card-table">
+              <thead>
+                <tr>
+                  <th>顧客名</th>
+                  <th>電話番号</th>
+                  <th>住所</th>
+                  <th>メモ</th>
+                  <th>予約合計</th>
+                  <th>出荷済み</th>
+                  <th>未出荷</th>
+                  <th class="no-print">詳細</th>
+                  <th class="no-print">編集</th>
+                  <th class="no-print">削除</th>
+                </tr>
+              </thead>
+              <tbody id="customerList"></tbody>
+            </table>
+          </div>
+          <div id="customersMore" class="list-more no-print" hidden></div>
+          <section id="customerDetail" hidden></section>
+        </section>
+        <section id="unshippedView" class="sub-panel" role="tabpanel" hidden>
+          <h2>未出荷の顧客</h2>
+          <details class="help-box">
+            <summary><span class="help-mark" aria-hidden="true">？</span>未出荷の数え方</summary>
+            <p>顧客ごと・品種ごとに、予約から、登録した出荷を引いた残りです。予約の状態を「出荷済み」にしただけでは減りません。「集計」の未出荷量は全体を品種ごとに差し引くので、この合計と違うことがあります。</p>
+          </details>
+          <p id="unshippedCustomerSummary" class="unshipped-summary"></p>
+          <div class="list-tools">
+            <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
+          </div>
+          <div class="table-wrapper">
+            <table class="card-table">
+              <thead>
+                <tr>
+                  <th>顧客名</th>
+                  <th>未出荷</th>
+                  <th>内訳（品種ごとの残り）</th>
+                  <th>電話番号</th>
+                  <th class="no-print">詳細</th>
+                </tr>
+              </thead>
+              <tbody id="unshippedCustomerList"></tbody>
+            </table>
+          </div>
+          <section id="unlinkedSection" class="unlinked-section" hidden>
+            <h3>顧客に結びついていない予約・出荷</h3>
+            <details class="help-box">
+              <summary><span class="help-mark" aria-hidden="true">？</span>これは何？</summary>
+              <p>顧客管理の顧客に結びついていないため、上の一覧に入っていない予約・出荷です（未出荷が残るものだけ）。「顧客として登録」を押すと、同じ名前の予約・出荷がその顧客に結びつきます。ボタンが無い名前は、それぞれの案内に従ってください。間違いなら「編集」で直すか「削除」します。</p>
+            </details>
+            <div id="unlinkedList"></div>
           </section>
-        </div>
+        </section>
       </main>
 
-      <main id="inventoryView" class="view-panel" hidden>
+      <main id="settingsView" class="view-panel" hidden>
         <h2>在庫管理</h2>
         <p class="inventory-help">品種ごとの在庫量・歩留まり・単価を入力してください。</p>
         <div class="mode-switch" role="group" aria-label="在庫の判定方法">
@@ -219,9 +456,13 @@
           <button type="button" class="mode-button active" id="stockModeShipped" data-mode="shipped" aria-pressed="true" data-action="setStockMode" data-arg="shipped">出荷ベース<small>出荷できる量−出荷</small></button>
           <button type="button" class="mode-button" id="stockModeReserved" data-mode="reserved" aria-pressed="false" data-action="setStockMode" data-arg="reserved">予約ベース<small>出荷できる量−予約</small></button>
         </div>
-        <p class="inventory-help" id="yieldHelp"></p>
-        <p class="inventory-help" id="stockModeHelp"></p>
-        <p class="inventory-help" id="priceHelp"></p>
+        <p class="inventory-help field-warning" id="yieldWarning" hidden></p>
+        <details class="help-box">
+          <summary><span class="help-mark" aria-hidden="true">？</span>在庫量・歩留まり・単価について</summary>
+          <p class="inventory-help" id="yieldHelp"></p>
+          <p class="inventory-help" id="stockModeHelp"></p>
+          <p class="inventory-help" id="priceHelp"></p>
+        </details>
         <div class="table-wrapper">
           <table class="inventory-table card-table">
             <thead>
@@ -240,203 +481,26 @@
           </table>
         </div>
         <p id="inventoryNote" class="dashboard-note" hidden></p>
-      </main>
-
-      <main id="shipmentsView" class="view-panel" hidden>
-        <h2>出荷登録</h2>
-        <div class="form" id="shipmentForm">
-          <div class="field">
-            <label for="shipmentVariety">品種</label>
-            <select id="shipmentVariety"></select>
+        <section class="backup-panel" id="backupPanel">
+          <h2>データのバックアップ</h2>
+          <p id="backupStatus" class="backup-status"></p>
+          <p id="backupRemind" class="backup-remind" hidden></p>
+          <div class="backup-actions">
+            <button type="button" id="exportBackupButton" data-action="exportBackup">データを書き出す</button>
+            <button type="button" id="importBackupButton" class="cancel-button" data-action="openImportFile">データを読み込む</button>
+            <input type="file" id="importFile" accept=".json,application/json" hidden>
           </div>
-          <div class="field">
-            <label for="shipmentDate">出荷日</label>
-            <input id="shipmentDate" type="date">
-          </div>
-          <div class="field">
-            <label for="shipmentName">顧客（名前・ふりがな・電話番号で探す）</label>
-            <div class="customer-picker">
-              <input id="shipmentName" type="text" placeholder="例：やまだ／山田／090" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="shipmentNameSuggest" aria-describedby="shipmentNamePicked" maxlength="200">
-              <button type="button" id="shipmentNameClear" class="customer-clear" aria-label="顧客の欄を空にする" hidden>×</button>
-              <ul id="shipmentNameSuggest" class="customer-suggest" role="listbox" aria-label="顧客の候補" hidden></ul>
-            </div>
-            <p id="shipmentNameSuggestStatus" class="visually-hidden" aria-live="polite"></p>
-            <p id="shipmentNamePicked" class="customer-picked" hidden></p>
-            <small>名前・ふりがな・電話番号の一部を入れ、出てきた候補から選びます。初めての人は名前を入れたまま保存すると、顧客管理にも自動で登録されます。</small>
-            <!-- 選んだ顧客の番号を持っておくための欄（画面には出さない） -->
-            <select id="shipmentCustomerSelect" hidden aria-hidden="true" tabindex="-1">
-              <option value="">新しい顧客（名前欄に入力）</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="shipmentKg">重量（kg）</label>
-            <input id="shipmentKg" type="number" min="0.1" step="0.1" placeholder="例：20">
-          </div>
-          <div class="field">
-            <label for="shipmentMemo">メモ</label>
-            <input id="shipmentMemo" type="text" maxlength="5000">
-          </div>
-          <div class="field">
-            <label for="shipmentReservation">対象の予約</label>
-            <select id="shipmentReservation" disabled></select>
-          </div>
-          <div class="form-actions">
-            <button id="shipmentSubmitButton" data-action="addShipment">出荷を登録</button>
-            <button id="cancelShipmentEditButton" class="cancel-button" hidden data-action="cancelShipmentEdit">キャンセル</button>
-          </div>
-        </div>
-        <div id="varietyMismatchNotice" class="data-warning" role="status" hidden></div>
-        <h2>出荷一覧</h2>
-        <div class="filters">
-          <label for="shipmentSort">並び順</label>
-          <select id="shipmentSort">
-            <option value="recent">新しい順（登録）</option>
-            <option value="dateDesc">出荷日が新しい順</option>
-            <option value="dateAsc">出荷日が古い順</option>
-            <option value="name">顧客名順</option>
-          </select>
-        </div>
-        <div class="list-tools">
-          <button type="button" class="tool-button" data-action="exportShipmentsCsv">表示中の一覧をCSVで保存</button>
-          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
-        </div>
-        <div class="table-wrapper">
-          <table class="card-table">
-            <thead>
-              <tr>
-                <th>出荷日</th>
-                <th>品種</th>
-                <th>顧客</th>
-                <th>kg</th>
-                <th>メモ</th>
-                <th class="no-print">操作</th>
-              </tr>
-            </thead>
-            <tbody id="shipmentList"></tbody>
-          </table>
-        </div>
-        <div id="shipmentsMore" class="list-more no-print" hidden></div>
-        <h2>出荷集計</h2>
-        <div class="table-wrapper">
-          <table class="shipment-summary-table">
-            <thead>
-              <tr>
-                <th>品種</th>
-                <th>在庫量(精米前)</th>
-                <th>出荷できる量</th>
-                <th>予約量</th>
-                <th>出荷量</th>
-                <th>未出荷</th>
-              </tr>
-            </thead>
-            <tbody id="shipmentSummaryBody"></tbody>
-          </table>
-        </div>
-      </main>
-
-      <main id="unshippedView" class="view-panel" hidden>
-        <h2>未出荷の顧客</h2>
-        <p class="section-help">まだ出荷していない分がある顧客です。未出荷は、顧客ごと・品種ごとに「予約−出荷」を出して、残りがある分だけを足した量です。出荷管理で登録した出荷だけを出荷済みとして数えます（予約の状態を「出荷済み」にしただけでは減りません）。ダッシュボードの未出荷量は全体を品種ごとに差し引くため、この合計と合わないことがあります。</p>
-        <p id="unshippedCustomerSummary" class="unshipped-summary"></p>
-        <div class="list-tools">
-          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
-        </div>
-        <div class="table-wrapper">
-          <table class="card-table">
-            <thead>
-              <tr>
-                <th>顧客名</th>
-                <th>未出荷</th>
-                <th>内訳（品種ごとの残り）</th>
-                <th>電話番号</th>
-                <th class="no-print">詳細</th>
-              </tr>
-            </thead>
-            <tbody id="unshippedCustomerList"></tbody>
-          </table>
-        </div>
-        <section id="unlinkedSection" class="unlinked-section" hidden>
-          <h3>顧客に結びついていない予約・出荷</h3>
-          <p class="section-help">名前だけで入力されていて同じ名前の顧客が登録されていない、または登録されていた顧客が見つからない（削除されたなど）ため、上の一覧に入っていない分です（未出荷が残っているものだけを出しています）。「顧客として登録」で顧客を登録すると、同じ名前の予約・出荷がその顧客に結びつきます。ボタンが出ていない名前は、それぞれの案内に従ってください。間違いなら「編集」で直すか、「削除」してください。</p>
-          <div id="unlinkedList"></div>
+          <p class="backup-note">書き出したファイルには顧客の名前・電話番号・住所が含まれます。GitHubなどインターネット上に公開しないでください。</p>
         </section>
       </main>
-
-      <main id="customersView" class="view-panel" hidden>
-        <h2>顧客管理</h2>
-        <div class="form customer-form">
-          <div class="field">
-            <label for="customerName">顧客名（必須）</label>
-            <input id="customerName" type="text" placeholder="例：山田太郎" maxlength="200">
-          </div>
-          <div class="field">
-            <label for="customerFurigana">ふりがな</label>
-            <input id="customerFurigana" type="text" placeholder="例：やまだたろう" maxlength="200">
-          </div>
-          <div class="field">
-            <label for="customerPhone">電話番号</label>
-            <input id="customerPhone" type="tel" placeholder="例：090-0000-0000" maxlength="50">
-          </div>
-          <div class="field">
-            <label for="customerAddress">住所</label>
-            <input id="customerAddress" type="text" placeholder="例：東京都" maxlength="1000">
-          </div>
-          <div class="field">
-            <label for="customerMemo">メモ</label>
-            <input id="customerMemo" type="text" maxlength="5000">
-          </div>
-          <div class="form-actions">
-            <button id="customerSubmitButton" data-action="saveCustomer">顧客を登録</button>
-            <button id="cancelCustomerEditButton" class="cancel-button" hidden data-action="cancelCustomerEdit">キャンセル</button>
-          </div>
-        </div>
-        <div class="filters">
-          <label for="customerSearch">顧客名検索</label>
-          <input id="customerSearch" type="search">
-          <label for="customerSort">並び順</label>
-          <select id="customerSort">
-            <option value="name">顧客名</option>
-            <option value="recent">新しい順（登録）</option>
-            <option value="reservations">予約量順</option>
-          </select>
-        </div>
-        <div class="list-tools">
-          <button type="button" class="tool-button" data-action="exportCustomersCsv">表示中の一覧をCSVで保存</button>
-          <button type="button" class="tool-button" data-action="printCurrentList">この一覧を印刷</button>
-        </div>
-        <div class="table-wrapper">
-          <table class="card-table">
-            <thead>
-              <tr>
-                <th>顧客名</th>
-                <th>電話番号</th>
-                <th>住所</th>
-                <th>メモ</th>
-                <th>予約合計</th>
-                <th>出荷済み</th>
-                <th>未出荷</th>
-                <th class="no-print">詳細</th>
-                <th class="no-print">編集</th>
-                <th class="no-print">削除</th>
-              </tr>
-            </thead>
-            <tbody id="customerList"></tbody>
-          </table>
-        </div>
-        <div id="customersMore" class="list-more no-print" hidden></div>
-        <section id="customerDetail" hidden></section>
-      </main>
-      <section class="backup-panel" id="backupPanel">
-        <h2>データのバックアップ</h2>
-        <p id="backupStatus" class="backup-status"></p>
-        <p id="backupRemind" class="backup-remind" hidden></p>
-        <div class="backup-actions">
-          <button type="button" id="exportBackupButton" data-action="exportBackup">データを書き出す</button>
-          <button type="button" id="importBackupButton" class="cancel-button" data-action="openImportFile">データを読み込む</button>
-          <input type="file" id="importFile" accept=".json,application/json" hidden>
-        </div>
-        <p class="backup-note">書き出したファイルには顧客の名前・電話番号・住所が含まれます。GitHubなどインターネット上に公開しないでください。</p>
-      </section>
+    </div>
+    <!-- スマホでいつも右下に出す「＋」ボタン（予約・出荷をすぐ登録する） -->
+    <div id="fab" class="fab no-print">
+      <div id="fabMenu" class="fab-menu" hidden>
+        <button type="button" data-action="openReservationForm">予約を追加</button>
+        <button type="button" data-action="openShipmentForm">出荷を登録</button>
+      </div>
+      <button type="button" id="fabButton" class="fab-button" aria-label="予約・出荷を登録する" aria-expanded="false" aria-controls="fabMenu" data-action="toggleFab">＋</button>
     </div>
     <div id="docPrint" class="doc-print"></div>
     <div id="toastArea" class="toast-area" role="status" aria-live="polite"></div>
@@ -466,6 +530,6 @@
     <script src="vendor/supabase-js-2.117.2.js"></script>
     <script src="supabase-config.js"></script>
     <script src="supabase-client.js?v=26"></script>
-    <script src="app.js?v=31"></script>
+    <script src="app.js?v=34"></script>
   </body>
 </html>

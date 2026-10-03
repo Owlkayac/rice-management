@@ -72,6 +72,196 @@ h2 {
   font-weight: bold;
 }
 
+.tab-icon {
+  margin-right: 4px;
+}
+
+/* タブの中の切り替え（注文：予約・出荷・集計、顧客：顧客管理・未出荷の顧客） */
+.sub-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 20px;
+  padding: 4px;
+  background: var(--green-50);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.sub-tab {
+  flex: 1 1 0;
+  min-height: 44px;
+  padding: 8px 6px;
+  font-size: 16px;
+  background: transparent;
+  color: var(--green-900);
+}
+
+.sub-tab:hover {
+  background: var(--green-100);
+}
+
+.sub-tab.active {
+  background: var(--green-700);
+  color: #fff;
+  font-weight: bold;
+}
+
+/* ホーム */
+.home-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.home-head h2 {
+  margin: 8px 0;
+}
+
+.home-add {
+  flex: 0 0 auto;
+  min-height: 44px;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.home-section {
+  margin: 16px 0 24px;
+}
+
+.home-section h3 {
+  margin: 0 0 8px;
+  color: var(--green-900);
+}
+
+.home-section h3 small {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: normal;
+  color: var(--muted);
+}
+
+.home-pending {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.home-more {
+  margin: 8px 0 0;
+}
+
+.home-backup-remind {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.home-backup-remind .tool-button {
+  min-height: 44px;
+}
+
+.home-stock {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.home-stock-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.home-stock-item.stock-low {
+  background: #fff3cd;
+}
+
+.home-stock-item.stock-shortage {
+  background: #ffdede;
+}
+
+.home-stock-name {
+  font-weight: bold;
+  color: var(--green-900);
+}
+
+/* 「？」で開く短い説明 */
+.help-box {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.help-box summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--green-900);
+}
+
+.help-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--green-100);
+  font-weight: bold;
+}
+
+.help-box p {
+  margin: 4px 0 8px;
+}
+
+/* 予約一覧の「未出荷だけ」「すべて」 */
+.quick-filters {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.quick-filter {
+  min-height: 44px;
+  padding: 8px 16px;
+  font-size: 16px;
+  background: var(--green-100);
+  color: var(--green-900);
+}
+
+.quick-filter.active {
+  background: var(--green-700);
+  color: #fff;
+  font-weight: bold;
+}
+
+/* 絞り込みの「開く」ボタンはスマホだけ。PC では残りの欄もいつも出す（表の並びはそのまま） */
+.filters-toggle {
+  display: none;
+}
+
+.filters-more {
+  display: contents;
+}
+
+/* 右下の「＋」ボタンはスマホだけ */
+.fab {
+  display: none;
+}
+
 .form,
 .filters {
   display: grid;
@@ -929,6 +1119,120 @@ small {
 @media (max-width: 600px) {
   body {
     padding: 10px;
+    /* 下に固定したタブと「＋」ボタンが、いちばん下の欄やボタンを隠さないように余白を取る */
+    padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* タブは画面の下に固定する */
+  .view-tabs {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    gap: 4px;
+    margin: 0;
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
+    border-top: 2px solid #d7e3d7;
+    border-bottom: 0;
+    overflow: visible;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.08);
+  }
+
+  .view-tab {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 54px;
+    padding: 4px 2px;
+    font-size: 13px;
+    line-height: 1.3;
+    white-space: normal;
+    border-radius: 8px;
+  }
+
+  .tab-icon {
+    margin: 0;
+    font-size: 20px;
+  }
+
+  /* トーストは、下のタブと「＋」ボタンより上に出す（重なると「＋」が押せなくなるため） */
+  .toast-area {
+    bottom: calc(144px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 文字を入れている間は、下のナビと「＋」を隠す（キーボードの上に上がってきて、欄や候補の一覧を隠さないように） */
+  body.typing .view-tabs,
+  body.typing .fab {
+    display: none;
+  }
+
+  body.typing .toast-area {
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 上のタブが無いので、欄を上に出すときの余白は小さくてよい */
+  .customer-picker input {
+    scroll-margin-top: 16px;
+  }
+
+  .fab {
+    display: block;
+    position: fixed;
+    right: 16px;
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    z-index: 40;
+  }
+
+  .fab-button {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    font-size: 30px;
+    line-height: 1;
+    padding: 0;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25);
+  }
+
+  .fab-menu {
+    position: absolute;
+    right: 0;
+    bottom: 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: max-content;
+  }
+
+  .fab-menu[hidden] {
+    display: none;
+  }
+
+  .fab-menu button {
+    min-height: 48px;
+    font-size: 16px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+
+  .sub-tab {
+    font-size: 15px;
+  }
+
+  /* 絞り込みは検索欄だけを見せ、残りは「絞り込み・並び順」で開く */
+  .filters-toggle {
+    display: block;
+    min-height: 44px;
+  }
+
+  .collapsible-filters .filters-more {
+    display: none;
+  }
+
+  .collapsible-filters.open .filters-more {
+    display: contents;
   }
 
   .container {
@@ -953,10 +1257,6 @@ small {
 
   .customer-detail {
     padding: 14px;
-  }
-
-  .dashboard-cards .customer-card:last-child {
-    grid-column: 1 / -1;
   }
 
   .dashboard-split {
@@ -1260,6 +1560,10 @@ small {
   }
 
   .view-tabs,
+  .sub-tabs,
+  .quick-filters,
+  .home-head,
+  .fab,
   .form,
   .filters,
   .list-tools,

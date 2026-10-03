@@ -16,12 +16,13 @@
 | ファイル | ユーザーが実行するか |
 |---|---|
 | `supabase-schema.sql` | **実行させない。** 最初の準備のときだけのファイル。4つのテーブルを消して作り直すので、データがすべて消えるうえ、ルールが「誰でも読み書きできる」に戻る（中で止まるようにしてあるが、頼りにしない） |
-| `supabase-auth.sql`・`supabase-hardening.sql`・`supabase-yield.sql` | 実行済み、または実行済みかもしれない。中身を変えたときや、まだ実行していないと分かったときだけ実行してもらう（どれも、もう一度実行してもデータは消えない）。順番は auth → hardening（hardening は auth で作る表を使う）。実行したかは、ユーザーの記憶より、読むだけの select（auth：`select to_regclass('public.app_members');`、hardening：`select to_regclass('public.audit_log');`、yield：`select column_name from information_schema.columns where table_name = 'variety_settings' and column_name = 'yield_percent';`。空なら未実行）で確かめてもらう。最初から準備し直すときの順番は schema → auth → hardening → yield |
+| `supabase-auth.sql`・`supabase-hardening.sql`・`supabase-yield.sql` | 実行済み、または実行済みかもしれない。中身を変えたときや、まだ実行していないと分かったときだけ実行してもらう（どれも、もう一度実行してもデータは消えない）。順番は auth → hardening（hardening は auth で作る表を使う）。実行したかは、ユーザーの記憶より、読むだけの selectで確かめてもらう（auth：`select to_regclass('public.app_members');` → `app_members` と出たら実行済み、NULL なら未実行。hardening：`select to_regclass('public.audit_log');` → `audit_log` なら実行済み、NULL なら未実行。yield：`select column_name from information_schema.columns where table_name = 'variety_settings' and column_name = 'yield_percent';` → 1行出たら実行済み、0行なら未実行）。この3つは、決まり（制約）やルール（policy）を消して付け直すが、データは消さないので、下の最後の決まり（同意をもらう）には当たらない。中身・理由・データが消えないことを伝えればよい |
 | `app.js`・`supabase-client.js`・`supabase-config*.js`・`vendor/` の中 | ユーザーが実行するものではない（ブラウザがアプリを開いたときに読み込む） |
 | 上の表にない SQL や、SQL Editor に貼る1行の SQL | 読むだけの `select` は、目的を伝えて実行してもらってよい。データや設定を変える SQL は、手順書にあるもの（`SECURITY.md` の「4.」の年1回の記録の削除など）でも、ないものでも、下の最後の決まりのとおり、何が変わるかを伝えて同意をもらってから |
 
 - 実行してもらうときは、**ファイル名を1つずつはっきり書き**、なぜ必要か・何が変わるか・データが消えないかを伝える。「`supabase-*.sql` を実行する」のように、まとめて書かない。
 - 「念のため全部実行し直す」「最初の手順書（`SUPABASE_SWITCH.md`・`SUPABASE_LOGIN.md`）をもう一度上から行う」とは言わない。
+- 最初から準備し直す（schema → auth → hardening → yield の順）のは、新しい空の Supabase プロジェクトを作るときだけ。そのときも、データが無いことを確かめ、ユーザーの同意をもらってから `supabase-schema.sql` を案内する。
 - データベースを変えるときは、データを消さず、何度実行しても同じになる新しい `supabase-*.sql` を作り、上の表と手順書に足す（`supabase-schema.sql` も、最初の準備用として同じ内容に合わせてよいが、ユーザーには実行させない）。そのファイルの1行目近くに「いつ実行するか／もう実行しなくてよいのはいつか」を書く。
 - `drop table`・`delete`・`truncate`・`drop policy` など、データや守りが消える・変わる SQL は、ユーザーに実行させる前に、消えるもの・変わるものと件数の確かめ方を伝え、同意をもらう。
 

@@ -152,13 +152,26 @@ function storeItem(k, text) {
 function notify(message, type = "info", duration = 5000) {
   const area = document.getElementById("toastArea");
   if (!area) return;
-  while (area.children.length >= 4) area.firstChild.remove();
+  // 多すぎるときは古いものから消す。「保存しました」は、ほかの大事な知らせより先に消す
+  while (area.children.length >= 4) (area.querySelector(".toast-success") || area.firstChild).remove();
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = message;
   el.onclick = () => el.remove();
   area.appendChild(el);
   setTimeout(() => el.remove(), duration);
+}
+
+// Supabase への送信がエラーなく終わったときに出す知らせ（noticeAfterSave で立てる）。
+// 画面の下のほうで操作していても、保存できたかが分かるようにするため（上の「保存済み」の表示は、スクロールすると見えない）
+// 送信中に続けて保存したときも、どれも知らせるよう、たまった分をすべて持つ
+let pendingSaveNotices = [];
+
+// 直前の保存が Supabase に届いたら、message を知らせる（送れなかったときは出さない。赤い枠とお知らせが代わりに出る）。
+// 保存（save）を呼んだあとに呼ぶこと。送信が予約されていないときは何も出さない（送っていないのに「保存しました」と出さないため）
+function noticeAfterSave(message) {
+  if (!cloudReady) return;
+  if (cloudSaving || cloudSaveQueued) pendingSaveNotices.push(message);
 }
 
 let lastSaveWarningAt = 0;
@@ -1311,6 +1324,7 @@ function commitReservation(r) {
   } else {
     save("reservations", reservations);
   }
+  noticeAfterSave(`予約を保存しました（${ownerName}・${varietyLabel(r.variety)}・${monthLabel(r.month)}・${formatKg(r.kg)}）`);
   if (moved.length) notify(`紐づいている出荷${moved.length}件の顧客も「${owner ? owner.name : r.name}」に変えました`, "info", 8000);
   clearReservation();
   refreshAll();
@@ -1574,10 +1588,18 @@ function hiddenReservationLabel() {
 // 追加・編集した予約が、今の絞り込みでは一覧に出ないときに知らせる
 // （一覧で見つからないと「登録できなかった」と思い、もう一度登録して同じ予約が2件になるのを防ぐため）
 function notifyIfReservationHidden(r) {
+  // 検索や品種・月・受付経路の絞り込みに合わないとき
+  if (!withCustomerLookup(() => reservationMatchesFilters(r))) {
+    notify("この予約は、今の検索・絞り込みの条件に合わないため、一覧には出ません。検索欄や「絞り込み・並び順」の条件を消すと見られます。", "info", 10000);
+    return;
+  }
+  // 状態の絞り込みに合わないとき（一覧と同じ判定を使う）
   const fs = document.getElementById("filterStatus").value;
-  if (fs !== STATUS_FILTER_UNSHIPPED || !reservationMatchesFilters(r)) return;
-  if (withCustomerLookup(() => reservationIsUnshipped(r, unshippedContext()))) return;
-  notify("予約を保存しました。この予約は出荷を登録し終えた扱いのため、今の表示（未出荷だけ）では一覧に出ません。上の「すべて」を押すと見られます。", "info", 10000);
+  if (!fs) return;
+  if (withCustomerLookup(() => reservationMatchesStatus(r, fs, fs === STATUS_FILTER_UNSHIPPED ? unshippedContext() : null))) return;
+  notify(fs === STATUS_FILTER_UNSHIPPED
+    ? "この予約は出荷を登録し終えた扱いのため、今の表示（未出荷だけ）では一覧に出ません。上の「すべて」を押すと見られます。"
+    : "この予約は、今の状態の絞り込みに合わないため、一覧には出ません。上の「すべて」を押すと見られます。", "info", 10000);
 }
 
 // 予約を「出荷済み」にしたとき、「出荷済み以外」の表示で一覧から消えるので、消えた理由を知らせる
@@ -1788,6 +1810,7 @@ function displayInventory() {
       }
       inventory[v] = value;
       save(INVENTORY_STORAGE_KEY, inventory);
+      noticeAfterSave(`${v}の在庫量（${formatKg(value)}）を保存しました`);
       refreshAll();
     };
     tr.querySelector(".price-input").onchange = e => {
@@ -1803,6 +1826,7 @@ function displayInventory() {
       }
       prices[v] = value;
       save(PRICES_STORAGE_KEY, prices);
+      noticeAfterSave(`${v}の単価（${value.toLocaleString("ja-JP")}円/kg）を保存しました`);
       refreshAll();
     };
     tr.querySelector(".yield-input").onchange = e => {
@@ -1823,6 +1847,7 @@ function displayInventory() {
       }
       yields[v] = roundYield(e.target.value);
       save(YIELDS_STORAGE_KEY, yields);
+      noticeAfterSave(`${v}の歩留まり（${yields[v]}%）を保存しました`);
       refreshAll();
     };
     body.appendChild(tr);
@@ -1965,6 +1990,7 @@ function commitShipment(s) {
   } else {
     save(SHIPMENTS_STORAGE_KEY, shipments);
   }
+  noticeAfterSave(`出荷を保存しました（${customerName(s)}・${varietyLabel(s.variety)}・${s.date}・${formatKg(s.kg)}）`);
   if (s.reservationId) {
     const linked = reservations.find(x => x.id === s.reservationId);
     if (linked && statusOf(linked) !== "shipped" && remainingForReservation(linked) <= 0) {
@@ -3332,9 +3358,12 @@ function scheduleCloudSave() {
 }
 
 async function runCloudSave() {
+  let saved = false;
   try {
     while (cloudSaveQueued) {
       cloudSaveQueued = false;
+      // 前の回の送信が届いていても、この回で失敗したら「保存できた」とは知らせない
+      saved = false;
       // 送る前に、コードまで済ませたログインかを確かめる（aal2 でないと、更新・削除が0行で終わり、
       // 「ほかの人が変えた」という的外れな案内になるため）
       const error = await checkCloudAal2() || await sendCloudChanges();
@@ -3353,13 +3382,20 @@ async function runCloudSave() {
         break;
       }
       cloudSaveError = null;
+      // 送信中に次の保存が来ていたら、もう1回送る。その回まで成功したときだけ「保存できた」とする
+      saved = !cloudSaveQueued;
     }
   } catch (err) {
+    saved = false;
     cloudSaveQueued = true;
     cloudSaveError = { message: String((err && err.message) || err), code: "" };
   } finally {
     cloudSaving = false;
     showCloudStatus();
+    // 送れなかった・ぶつかったときは、保存できたとは知らせない
+    const messages = pendingSaveNotices;
+    pendingSaveNotices = [];
+    if (saved && messages.length) notify(messages.length === 1 ? messages[0] : `${messages.length}件の変更を保存しました。\n${messages.map(m => `・${m}`).join("\n")}`, "success", messages.length === 1 ? 5000 : 8000);
   }
 }
 

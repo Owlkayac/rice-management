@@ -437,7 +437,7 @@ function stockWarning(r, ignoreId) {
   const total = roundKg(already + r.kg);
   if (total <= shippable) return "";
   let text = `${r.variety}の予約が出荷できる量を${formatKg(total - shippable)}超えます。\n\n在庫（精米前）：${formatKg(stock)}\n歩留まり：${yields[r.variety]}%\n出荷できる量：${formatKg(shippable)}\nこれまでの予約：${formatKg(already)}\n今回の予約：${formatKg(r.kg)}\n予約の合計：${formatKg(total)}\n\nこのまま登録しますか？`;
-  if (stock === 0) text += "\n（在庫が未入力の場合は、先に「在庫管理」で入力してください）";
+  if (stock === 0) text += "\n（在庫が未入力の場合は、先に「在庫・設定」で入力してください）";
   return text;
 }
 
@@ -1222,7 +1222,7 @@ function addReservation() {
       // 別の人が1人なら、その人を選べば保存できる。2人以上なら、どの人を選んでもほかの人の出荷が残るので、先に紐づけを外してもらう
       const next = others.length === 1
         ? `同じ人なら、顧客の欄で${list}を選んでください`
-        : "先に「出荷管理」で、この予約の顧客にしない人の出荷を「編集」し、対象の予約を「特定の予約に紐づけない」にしてください";
+        : "先に「注文」の「出荷」で、この予約の顧客にしない人の出荷を「編集」し、対象の予約を「特定の予約に紐づけない」にしてください";
       notify(`紐づいている出荷に、${list}の出荷があります。その人の出荷を別の顧客に移さないよう、保存を止めました。${next}`, "warn", 12000);
       return;
     }
@@ -1388,7 +1388,7 @@ function blockDeleteIfLinked(reservationId) {
   // どの出荷を直せばよいか分かるように、出荷日・品種・kg を並べる（多いときは先頭の5件まで）
   const list = linked.slice(0, 5).map(s => `${s.date || "日付なし"}・${varietyLabel(s.variety)}・${formatKg(s.kg)}`).join("、");
   const more = linked.length > 5 ? `ほか${linked.length - 5}件` : "";
-  notify(`この予約には出荷が${linked.length}件紐づいているため、削除できません（${list}${more}）。削除するには、先に「出荷管理」でこれらの出荷を編集して対象の予約を「特定の予約に紐づけない」にするか、その出荷を削除してください。`, "warn", 15000);
+  notify(`この予約には出荷が${linked.length}件紐づいているため、削除できません（${list}${more}）。削除するには、先に「注文」の「出荷」でこれらの出荷を編集して対象の予約を「特定の予約に紐づけない」にするか、その出荷を削除してください。`, "warn", 15000);
   return true;
 }
 
@@ -1495,7 +1495,7 @@ function hiddenShippedCount() {
 // 予約を「出荷済み」にしたとき、「出荷済み以外」の表示で一覧から消えるので、消えた理由を知らせる
 function notifyShippedHidden() {
   if (document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE) {
-    notify("出荷済みにしました。今は「出荷済み以外」を表示しているので、一覧からは隠れます（上の「状態」で「すべて」か「出荷済み」を選ぶと見られます）。", "info", 8000);
+    notify("出荷済みにしました。今は「未出荷だけ」を表示しているので、一覧からは隠れます（上の「すべて」を押すと見られます）。", "info", 8000);
   }
 }
 
@@ -1507,12 +1507,13 @@ function revealListRow(key, index) {
 }
 
 function displayReservations() {
+  showReservationFilterState();
   const body = document.getElementById("reservationList");
   body.innerHTML = "";
   const visible = getVisibleReservations();
   const shown = limitRows(visible, "reservations");
   const hiddenShipped = hiddenShippedCount();
-  showListMore("reservations", shown.length, visible.length, hiddenShipped ? `出荷済みの予約${hiddenShipped}件は隠しています（上の「状態」で「すべて」か「出荷済み」を選ぶと見られます）。` : "");
+  showListMore("reservations", shown.length, visible.length, hiddenShipped ? `出荷済みの予約${hiddenShipped}件は隠しています（上の「すべて」を押すと見られます）。` : "");
   shown.forEach(({ r, i }) => {
     const tr = document.createElement("tr");
     [varietyLabel(r.variety), monthLabel(r.month), customerName(r), formatKg(r.kg)].forEach((v, n) => {
@@ -1610,11 +1611,6 @@ function displayDashboard() {
     note.textContent = noMonth.length ? `月が入っていない予約が${noMonth.length}件（${formatKg(sumKg(noMonth))}）あります。月別の欄には入らず、合計にだけ入っています。予約一覧で「月なし」の予約を編集して月を選んでください。` : "";
   }
   document.getElementById("dashboardTotal").textContent = formatKg(grand);
-  const rc = new Set(reservations.map(customerKey));
-  const sc = new Set(shipments.map(customerKey));
-  document.getElementById("dashboardCustomers").textContent = `${customers.length}人`;
-  document.getElementById("dashboardReservationCustomerCount").textContent = `${rc.size}人`;
-  document.getElementById("dashboardShipmentCustomerCount").textContent = `${sc.size}人`;
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
   document.getElementById("dashboardShippable").textContent = `出荷できる量（精米後）：${formatKg(varieties.reduce((a, v) => a + shippableKg(v), 0))}`;
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
@@ -1640,6 +1636,18 @@ function getShippedTotalsAll() {
   return shipments.reduce((a, s) => a + (Number(s.kg) || 0), 0);
 }
 
+// 品種ごとの残り在庫（出荷できる量から、判定方法に合わせて出荷か予約を引いた量）
+function remainingStock(v, used) {
+  return roundKg(shippableKg(v) - (used[v] || 0));
+}
+
+// 残り在庫の状態：0kg未満は在庫不足、LOW_STOCK_THRESHOLD 未満は在庫少
+function stockLevel(remain) {
+  if (remain < 0) return { row: "stock-shortage", badge: '<span class="badge badge-shortage">在庫不足</span>' };
+  if (remain < LOW_STOCK_THRESHOLD) return { row: "stock-low", badge: '<span class="badge badge-low">在庫少</span>' };
+  return { row: "", badge: '<span class="badge badge-ok">在庫あり</span>' };
+}
+
 function displayInventory() {
   const reserved = getReservedTotals();
   const shipped = getShippedTotals();
@@ -1653,15 +1661,20 @@ function displayInventory() {
   document.getElementById("stockRemainHeader").innerHTML = `残り在庫<br><small>${info.basis}</small>`;
   document.getElementById("stockModeHelp").textContent = `${info.help}残りが${LOW_STOCK_THRESHOLD}kg未満で「在庫少」、0kg未満で「在庫不足」と表示します。`;
   document.getElementById("priceHelp").textContent = "納品書・請求書に使う、品種ごとの単価（1kgあたりの金額）です。0円のままでも記録できます。";
-  document.getElementById("yieldHelp").textContent = `在庫量は精米する前の量を入れてください。精米で減る分（米粉になる分など）を引くため、在庫量に歩留まり（${YIELD_MIN_PERCENT}〜${YIELD_MAX_PERCENT}%）をかけた「出荷できる量」から、予約・出荷の量を引いて残りを出します。` + (cloudYieldColumn ? "" : "\n※ 歩留まりを変えるには、先に Supabase で supabase-yield.sql を実行してください（それまでは、どの品種も90%で計算します）。");
+  document.getElementById("yieldHelp").textContent = `在庫量は精米する前の量を入れてください。精米で減る分（米粉になる分など）を引くため、在庫量に歩留まり（${YIELD_MIN_PERCENT}〜${YIELD_MAX_PERCENT}%）をかけた「出荷できる量」から、予約・出荷の量を引いて残りを出します。`;
+  // 歩留まりを変えられない理由は、説明を開かなくても見えるように、説明の外に出す
+  const yieldWarning = document.getElementById("yieldWarning");
+  yieldWarning.hidden = cloudYieldColumn;
+  yieldWarning.textContent = cloudYieldColumn ? "" : "※ 歩留まりを変えるには、先に Supabase で supabase-yield.sql を実行してください（それまでは、どの品種も90%で計算します）。";
   const body = document.getElementById("inventoryList");
   body.innerHTML = "";
   varieties.forEach(v => {
     const shippable = shippableKg(v);
-    const remain = roundKg(shippable - (used[v] || 0));
+    const remain = remainingStock(v, used);
+    const level = stockLevel(remain);
     const tr = document.createElement("tr");
-    tr.className = remain < 0 ? "stock-shortage" : remain < LOW_STOCK_THRESHOLD ? "stock-low" : "";
-    tr.innerHTML = `<th>${v}</th><td data-label="在庫量(精米前)"><input type="number" min="0" value="${inventory[v]}" class="stock-input" aria-label="${v}の在庫量(kg・精米前)"></td><td data-label="歩留まり(%)"><input type="number" min="${YIELD_MIN_PERCENT}" max="${YIELD_MAX_PERCENT}" step="0.1" inputmode="decimal" value="${yields[v]}" class="yield-input" aria-label="${v}の歩留まり(%)"${cloudYieldColumn ? "" : " disabled"}></td><td data-label="出荷できる量">${formatKg(shippable)}</td><td data-label="予約量">${formatKg(reserved[v])}</td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input" aria-label="${v}の単価(円/kg)"></td><td data-label="残り在庫(${info.basis})">${formatKg(remain)}</td><td data-label="状態">${remain < 0 ? '<span class="badge badge-shortage">在庫不足</span>' : remain < LOW_STOCK_THRESHOLD ? '<span class="badge badge-low">在庫少</span>' : '<span class="badge badge-ok">在庫あり</span>'}</td>`;
+    tr.className = level.row;
+    tr.innerHTML = `<th>${v}</th><td data-label="在庫量(精米前)"><input type="number" min="0" value="${inventory[v]}" class="stock-input" aria-label="${v}の在庫量(kg・精米前)"></td><td data-label="歩留まり(%)"><input type="number" min="${YIELD_MIN_PERCENT}" max="${YIELD_MAX_PERCENT}" step="0.1" inputmode="decimal" value="${yields[v]}" class="yield-input" aria-label="${v}の歩留まり(%)"${cloudYieldColumn ? "" : " disabled"}></td><td data-label="出荷できる量">${formatKg(shippable)}</td><td data-label="予約量">${formatKg(reserved[v])}</td><td data-label="単価(円/kg)"><input type="number" min="0" step="0.01" value="${prices[v]}" class="price-input" aria-label="${v}の単価(円/kg)"></td><td data-label="残り在庫(${info.basis})">${formatKg(remain)}</td><td data-label="状態">${level.badge}</td>`;
     // 止めたときは、欄を保存してある値に戻す（入れた値のまま残ると、保存できたように見えるため）
     tr.querySelector(".stock-input").onchange = e => {
       if (!ensureFresh()) {
@@ -1733,8 +1746,8 @@ function displayUnknownVarietyStock(body) {
   const note = document.getElementById("inventoryNote");
   if (!note) return;
   const lines = [];
-  if (unknownReservations.length) lines.push(`品種が入っていない（または不明な）予約が${unknownReservations.length}件（${formatKg(sumKg(unknownReservations))}）あり、表の「品種なし」の行にまとめています。どの品種の在庫とも結びつけられないため、A〜F の行の予約量や残り在庫には入っていません。「予約登録・一覧」でこれらの予約を編集して品種を選んでください。`);
-  if (unknownShipments.length) lines.push(`品種が入っていない（または不明な）出荷が${unknownShipments.length}件（${formatKg(sumKg(unknownShipments))}）あります。品種ごとの出荷量に入らないため、出荷ベースの残り在庫にも反映されていません。「出荷管理」でこれらの出荷を編集して品種を選んでください。`);
+  if (unknownReservations.length) lines.push(`品種が入っていない（または不明な）予約が${unknownReservations.length}件（${formatKg(sumKg(unknownReservations))}）あり、表の「品種なし」の行にまとめています。どの品種の在庫とも結びつけられないため、A〜F の行の予約量や残り在庫には入っていません。「注文」の「予約」でこれらの予約を編集して品種を選んでください。`);
+  if (unknownShipments.length) lines.push(`品種が入っていない（または不明な）出荷が${unknownShipments.length}件（${formatKg(sumKg(unknownShipments))}）あります。品種ごとの出荷量に入らないため、出荷ベースの残り在庫にも反映されていません。「注文」の「出荷」でこれらの出荷を編集して品種を選んでください。`);
   note.hidden = !lines.length;
   note.textContent = lines.join("\n");
 }
@@ -1771,7 +1784,7 @@ function addShipment() {
       return;
     }
     if (!varieties.includes(linked.variety)) {
-      notify("この予約には品種がありません。先に「予約登録・一覧」で予約を編集して品種を設定してください", "warn");
+      notify("この予約には品種がありません。先に「注文」の「予約」で予約を編集して品種を設定してください", "warn");
       return;
     }
     if (!sameVariety(linked.variety, s.variety)) {
@@ -2071,15 +2084,25 @@ function displayCustomers() {
   });
 }
 
-// 「未出荷の顧客」タブ：顧客ごとの未出荷（品種ごとの残りの合計）が0より大きい顧客を、多い順に並べる
+// 顧客ごとの未出荷（品種ごとの残りの合計）が0より大きい顧客を、多い順に並べる（ホームと「未出荷の顧客」で使う）
+function unshippedCustomerList() {
+  const groups = groupItemsByCustomer();
+  return customers.map(c => ({ c, s: customerStats(c, groups) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
+}
+
+// 品種ごとの残りを「A 10kg、B 5kg」の形の文字にする
+function unshippedItemsText(items) {
+  return items.map(i => `${i.label} ${formatKg(i.kg)}`).join("、");
+}
+
+// 「未出荷の顧客」タブ：未出荷のある顧客を、多い順に並べる
 function displayUnshippedCustomers() {
   const body = document.getElementById("unshippedCustomerList");
   if (!body) return;
-  const groups = groupItemsByCustomer();
-  const list = customers.map(c => ({ c, s: customerStats(c, groups) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
+  const list = unshippedCustomerList();
   // 同じ名前の人を番号で見分けているときは、顧客一覧と同じ番号を付ける
   const names = customerDisplayNames();
-  body.innerHTML = list.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="未出荷">${formatKg(s.unshipped)}</td><td data-label="内訳">${esc(s.unshippedItems.map(i => `${i.label} ${formatKg(i.kg)}`).join("、"))}</td><td data-label="電話番号">${esc(c.phone)}</td><td class="action-td"><button class="detail-button">詳細</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty-message">未出荷の顧客はいません</td></tr>';
+  body.innerHTML = list.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="未出荷">${formatKg(s.unshipped)}</td><td data-label="内訳">${esc(unshippedItemsText(s.unshippedItems))}</td><td data-label="電話番号">${esc(c.phone)}</td><td class="action-td"><button class="detail-button">詳細</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty-message">未出荷の顧客はいません</td></tr>';
   // 「詳細」は顧客管理タブの詳細を開く（顧客の id は onclick 属性に書き込まず、ここで結びつける）
   const rows = body.querySelectorAll("tr");
   list.forEach(({ c }, n) => {
@@ -2100,6 +2123,23 @@ function displayUnlinkedUnshipped() {
   const section = document.getElementById("unlinkedSection");
   const box = document.getElementById("unlinkedList");
   if (!section || !box) return;
+  const list = unlinkedUnshippedGroups();
+  box.innerHTML = "";
+  section.hidden = !list.length;
+  list.forEach(g => box.appendChild(unlinkedGroupElement(g)));
+  // 上の一覧だけを見て「未出荷なし」と思わないように、未登録の分があることを上にも出す
+  if (list.length) {
+    const total = roundKg(list.reduce((a, g) => a + g.unshipped.remaining, 0));
+    const note = `ほかに、顧客に結びついていない予約・出荷の未出荷が合計${formatKg(total)}あります（下に表示）`;
+    const summary = document.getElementById("unshippedCustomerSummary");
+    if (summary) summary.textContent = summary.textContent ? `${summary.textContent}／${note}` : note;
+    const empty = document.querySelector("#unshippedCustomerList .empty-message");
+    if (empty) empty.textContent = "登録済みの顧客には未出荷がありません";
+  }
+}
+
+// 顧客に結びついていない予約・出荷を、名前ごと（顧客の id が残っているものは id ごと）にまとめ、未出荷が残っているまとまりを多い順に返す
+function unlinkedUnshippedGroups() {
   const groups = new Map();
   const add = (item, kind) => {
     if (customerFor(item)) return;
@@ -2127,19 +2167,7 @@ function displayUnlinkedUnshipped() {
   };
   reservations.forEach(r => add(r, "rs"));
   shipments.forEach(s => add(s, "ss"));
-  const list = [...groups.values()].map(g => ({ ...g, unshipped: unshippedByVariety(g.rs, g.ss) })).filter(g => g.unshipped.remaining > 0).sort((a, b) => b.unshipped.remaining - a.unshipped.remaining);
-  box.innerHTML = "";
-  section.hidden = !list.length;
-  list.forEach(g => box.appendChild(unlinkedGroupElement(g)));
-  // 上の一覧だけを見て「未出荷なし」と思わないように、未登録の分があることを上にも出す
-  if (list.length) {
-    const total = roundKg(list.reduce((a, g) => a + g.unshipped.remaining, 0));
-    const note = `ほかに、顧客に結びついていない予約・出荷の未出荷が合計${formatKg(total)}あります（下に表示）`;
-    const summary = document.getElementById("unshippedCustomerSummary");
-    if (summary) summary.textContent = summary.textContent ? `${summary.textContent}／${note}` : note;
-    const empty = document.querySelector("#unshippedCustomerList .empty-message");
-    if (empty) empty.textContent = "登録済みの顧客には未出荷がありません";
-  }
+  return [...groups.values()].map(g => ({ ...g, unshipped: unshippedByVariety(g.rs, g.ss) })).filter(g => g.unshipped.remaining > 0).sort((a, b) => b.unshipped.remaining - a.unshipped.remaining);
 }
 
 // 顧客が登録されていない名前1つ分の表示（利用者の入力は textContent で入れる）
@@ -2495,17 +2523,38 @@ function mergeCustomer(fromId, toId) {
   });
 }
 
-function switchView(id) {
-  document.querySelectorAll(".view-panel").forEach(e => e.hidden = e.id !== id);
-  document.querySelectorAll(".view-tab").forEach(e => {
+// タブのボタンの「選んでいる」表示を合わせる
+function markTabs(buttons, id) {
+  buttons.forEach(e => {
     const on = e.dataset.view === id;
     e.classList.toggle("active", on);
     e.setAttribute("aria-selected", on ? "true" : "false");
-    if (on && e.scrollIntoView) e.scrollIntoView({ block: "nearest", inline: "center" });
   });
-  if (id === "customersView") {
+}
+
+// 画面を切り替える。id は、4つのタブ（ホーム・注文・顧客・在庫・設定）か、その中の小さなタブ（予約登録・一覧、出荷管理など）の id
+function switchView(id) {
+  const target = document.getElementById(id);
+  const panel = target && target.closest(".view-panel");
+  if (!panel) return;
+  document.querySelectorAll(".view-panel").forEach(e => e.hidden = e !== panel);
+  markTabs(document.querySelectorAll(".view-tab"), panel.id);
+  // 小さなタブを指定されたら、それを出す（大きなタブだけなら、前に開いていた小さなタブのまま）
+  if (target.classList.contains("sub-panel")) {
+    panel.querySelectorAll(".sub-panel").forEach(e => e.hidden = e !== target);
+  }
+  const sub = panel.querySelector(".sub-panel:not([hidden])");
+  if (sub) markTabs(panel.querySelectorAll(".sub-tab"), sub.id);
+  closeFabMenu();
+  if (sub && sub.id === "customersView") {
     displayCustomers();
   }
+}
+
+// タブを押したとき：画面を切り替えて、いちばん上から見せる（下のほうを見ていたときに、切り替えた画面の途中から出ないように）
+function onTabClick(id) {
+  switchView(id);
+  window.scrollTo(0, 0);
 }
 
 function refreshAll() {
@@ -2514,6 +2563,7 @@ function refreshAll() {
 }
 
 function refreshAllViews() {
+  displayHome();
   displayReservations();
   displayDashboard();
   displayInventory();
@@ -2527,6 +2577,220 @@ function refreshAllViews() {
   // 予約の追加・削除や顧客の変更を、出荷フォームの「対象の予約」にも反映する（選んでいた予約は残す）
   refreshShipmentReservationOptions(document.getElementById("shipmentReservation").value);
   showBackupStatus();
+}
+
+// ---------- ホーム（今日やること） ----------
+
+// ホームに出す未出荷の顧客の数（ほかは「未出荷の顧客をすべて見る」で見る）
+const HOME_UNSHIPPED_LIMIT = 10;
+
+function displayHome() {
+  displayHomeUnshipped();
+  displayHomeStock();
+}
+
+// 未出荷の顧客（多い順）。顧客名・品種ごとの残り・電話番号と「出荷する」ボタン
+function displayHomeUnshipped() {
+  const body = document.getElementById("homeUnshippedList");
+  const list = unshippedCustomerList();
+  const shown = list.slice(0, HOME_UNSHIPPED_LIMIT);
+  const names = customerDisplayNames();
+  body.innerHTML = "";
+  shown.forEach(({ c, s }) => {
+    const tr = document.createElement("tr");
+    const nameTd = document.createElement("td");
+    nameTd.dataset.label = "顧客名";
+    nameTd.textContent = c.name + names.get(c.customerId).number;
+    const itemsTd = document.createElement("td");
+    itemsTd.dataset.label = "品種ごとの残り";
+    itemsTd.textContent = unshippedItemsText(s.unshippedItems);
+    const phoneTd = document.createElement("td");
+    phoneTd.dataset.label = "電話番号";
+    // 電話番号は、押すと電話をかけられるようにする（数字が無ければ文字のまま）
+    const digits = digitsOnly(c.phone);
+    if (digits) {
+      const a = document.createElement("a");
+      a.href = `tel:${digits}`;
+      a.textContent = c.phone;
+      phoneTd.appendChild(a);
+    } else {
+      phoneTd.textContent = c.phone || "";
+    }
+    const actionTd = document.createElement("td");
+    actionTd.className = "action-cell";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "出荷する";
+    // 顧客の id は属性に書き込まず、ここで結びつける
+    button.onclick = () => startShipmentFor(c.customerId);
+    actionTd.appendChild(button);
+    tr.append(nameTd, itemsTd, phoneTd, actionTd);
+    body.appendChild(tr);
+  });
+  const unlinked = unlinkedUnshippedGroups();
+  if (!shown.length) {
+    body.innerHTML = `<tr><td colspan="4" class="empty-message">${unlinked.length ? "登録済みの顧客には未出荷がありません" : "未出荷の顧客はいません"}</td></tr>`;
+  }
+  const total = roundKg(list.reduce((a, { s }) => a + s.unshipped, 0));
+  const lines = [];
+  if (list.length) lines.push(`${list.length}人（合計${formatKg(total)}）${list.length > shown.length ? `のうち、多い${shown.length}人を表示` : ""}`);
+  // 顧客に結びついていない分は、ここには出さないので、あることだけ知らせる
+  if (unlinked.length) lines.push(`ほかに、顧客に結びついていない未出荷が${formatKg(roundKg(unlinked.reduce((a, g) => a + g.unshipped.remaining, 0)))}あります（「未出荷の顧客」で確認）`);
+  document.getElementById("homeUnshippedSummary").textContent = lines.join("／");
+  document.getElementById("homeUnshippedMore").hidden = list.length <= shown.length && !unlinked.length;
+}
+
+// 品種ごとの残り在庫（在庫管理と同じ判定方法・同じ色）
+function displayHomeStock() {
+  const used = stockMode === "reserved" ? getReservedTotals() : getShippedTotals();
+  document.getElementById("homeStockBasis").textContent = STOCK_MODES[stockMode].basis;
+  document.getElementById("homeStock").innerHTML = varieties.map(v => {
+    const remain = remainingStock(v, used);
+    const level = stockLevel(remain);
+    return `<div class="home-stock-item ${level.row}"><span class="home-stock-name">${esc(v)}</span><strong>${formatKg(remain)}</strong>${level.badge}</div>`;
+  }).join("");
+}
+
+// 予約の編集中なら、取り消してよいか確かめて新しい入力に戻す。取り消さないときは false
+// （「＋予約」は新しく追加するためのボタンなので、編集中のまま開くと、別の予約を上書きしてしまうため）
+function leaveReservationEdit() {
+  if (editingReservationId === null) return true;
+  if (!confirm("予約の編集中です。編集中の内容を取り消して、新しい予約の入力に切り替えますか？")) return false;
+  cancelEdit();
+  return true;
+}
+
+// 出荷の編集中や、新しい出荷を入力している途中なら、取り消してよいか確かめて空の入力に戻す。取り消さないときは false
+function leaveShipmentInput() {
+  if (editingShipmentId !== null) {
+    if (!confirm("出荷の編集中です。編集中の内容を取り消して、新しい出荷の入力に切り替えますか？")) return false;
+    cancelShipmentEdit();
+    return true;
+  }
+  const typing = document.getElementById("shipmentKg").value || document.getElementById("shipmentMemo").value.trim();
+  if (typing && !confirm("出荷の欄に kg かメモが入っています。入っている内容（顧客・対象の予約・kg・メモ）を消して、新しい出荷の入力に切り替えますか？")) return false;
+  clearShipmentForm();
+  return true;
+}
+
+// ホームの「出荷する」に入れる予約と kg を決める。
+// ホームに出している「品種ごとの残り」（予約に紐づけていない出荷も引いた数）に残りがある品種の予約だけから選び、
+// 月が早いもの（同じ月なら残りが多いもの）にする。kg は「予約の残り」と「その品種の残り」の小さいほう
+function shipmentSuggestion(customerId) {
+  const c = findCustomer(customerId);
+  const rest = new Map(customerStats(c, groupItemsByCustomer()).unshippedItems.map(i => [i.label, i.kg]));
+  const open = openReservationsFor(customerId).filter(x => x.remaining > 0 && rest.has(x.r.variety))
+    .sort((a, b) => monthNumber(a.r.month) - monthNumber(b.r.month) || b.remaining - a.remaining);
+  if (!open.length) return null;
+  return { reservation: open[0].r, kg: roundKg(Math.min(open[0].remaining, rest.get(open[0].r.variety))), count: open.length };
+}
+
+// ホームの「出荷する」：出荷の登録欄を開き、顧客・対象の予約・品種・kg（残り）・出荷日（今日）を入れる。
+// 押しただけでは保存しない（内容を確かめて「出荷を登録」を押してもらう）
+function startShipmentFor(customerId) {
+  if (!ensureFresh()) return;
+  if (!findCustomer(customerId)) return;
+  if (!leaveShipmentInput()) return;
+  switchView("shipmentsView");
+  pickCustomer(CUSTOMER_PICKERS[1], customerId);
+  const suggestion = shipmentSuggestion(customerId);
+  if (suggestion) {
+    document.getElementById("shipmentReservation").value = suggestion.reservation.id;
+    syncShipmentVarietyWithReservation();
+    document.getElementById("shipmentKg").value = suggestion.kg;
+  }
+  // 上に固定したタブの帯に隠れないよう、フォームを画面の中ほどに出す
+  document.getElementById("shipmentForm").scrollIntoView({ behavior: "smooth", block: "center" });
+  // 次に確かめる「対象の予約」へ移る（顧客の欄に移ると、候補の一覧が開いてしまうため）
+  document.getElementById("shipmentReservation").focus({ preventScroll: true });
+  let message = "内容を確かめて「出荷を登録」を押してください（まだ保存していません）";
+  if (!suggestion) message = "残りのある予約が見つからなかったため、品種と kg は入れていません。「対象の予約」と kg を選んでから「出荷を登録」を押してください";
+  else if (suggestion.count > 1) message = `残りのある予約が${suggestion.count}件あります。「対象の予約」と kg を確かめて「出荷を登録」を押してください`;
+  notify(message, "info", 8000);
+}
+
+// 「＋予約」「＋」→「予約を追加」：予約の入力フォームを、新しく追加する状態で開く
+function openReservationForm() {
+  if (!leaveReservationEdit()) return;
+  switchView("reservationsView");
+  document.getElementById("reservationForm").scrollIntoView({ behavior: "smooth", block: "center" });
+  document.getElementById("variety").focus({ preventScroll: true });
+}
+
+// 「＋」→「出荷を登録」：出荷の入力フォームを、新しく登録する状態で開く
+function openShipmentForm() {
+  if (!leaveShipmentInput()) return;
+  switchView("shipmentsView");
+  document.getElementById("shipmentForm").scrollIntoView({ behavior: "smooth", block: "center" });
+  document.getElementById("shipmentVariety").focus({ preventScroll: true });
+}
+
+// ホームの「バックアップへ」：在庫・設定を開き、バックアップの欄を見せる
+function showBackupPanel() {
+  switchView("settingsView");
+  document.getElementById("backupPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ---------- スマホの「＋」ボタン・絞り込み ----------
+
+function toggleFab() {
+  const menu = document.getElementById("fabMenu");
+  menu.hidden = !menu.hidden;
+  document.getElementById("fabButton").setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+  if (!menu.hidden) menu.querySelector("button").focus();
+}
+
+function closeFabMenu() {
+  const menu = document.getElementById("fabMenu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  document.getElementById("fabButton").setAttribute("aria-expanded", "false");
+}
+
+// 文字を入れる欄にいる間は、スマホの下のナビと「＋」を隠す（キーボードの上に上がってきて、入力中の欄や候補の一覧を隠さないように）
+function isTypingField(el) {
+  return !!el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && !["button", "checkbox", "radio", "file", "submit", "date"].includes(el.type)));
+}
+document.addEventListener("focusin", e => document.body.classList.toggle("typing", isTypingField(e.target)));
+document.addEventListener("focusout", () => document.body.classList.remove("typing"));
+
+// 「＋」の外を押したとき・Esc を押したときは、開いたメニューを閉じる
+document.addEventListener("click", e => {
+  if (!e.target.closest("#fab")) closeFabMenu();
+});
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || document.getElementById("fabMenu").hidden) return;
+  closeFabMenu();
+  document.getElementById("fabButton").focus();
+});
+
+// 予約一覧の「未出荷だけ」「すべて」。value は「状態」の欄に入れる値（"active" か、空＝すべて）
+function quickStatusFilter(value) {
+  const select = document.getElementById("filterStatus");
+  select.value = value === STATUS_FILTER_ACTIVE ? STATUS_FILTER_ACTIVE : "";
+  resetListLimit("reservations");
+  refreshAll();
+}
+
+// スマホで、検索欄のほかの絞り込み（品種・月・受付経路・状態・並び順）を開く・閉じる
+function toggleFilters() {
+  const box = document.getElementById("reservationFilters");
+  const open = box.classList.toggle("open");
+  document.getElementById("reservationFiltersToggle").setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+// 「未出荷だけ」「すべて」ボタンの押されている表示と、閉じた絞り込みに条件が入っているかの表示を合わせる
+function showReservationFilterState() {
+  const status = document.getElementById("filterStatus").value;
+  [["quickFilterActive", STATUS_FILTER_ACTIVE], ["quickFilterAll", ""]].forEach(([id, value]) => {
+    const on = status === value;
+    const button = document.getElementById(id);
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  // 状態を「受付済み」などにしているときや、品種・月・受付経路で絞っているときは、閉じていても分かるようにする
+  const narrowed = ["filterVariety", "filterMonth", "filterChannel"].some(id => document.getElementById(id).value) || (status !== "" && status !== STATUS_FILTER_ACTIVE);
+  document.getElementById("reservationFiltersToggle").textContent = narrowed ? "絞り込み・並び順（条件あり）" : "絞り込み・並び順";
 }
 
 // ---------- 複数タブ対策（他のタブでの更新を取り込む） ----------
@@ -3333,14 +3597,14 @@ function printCustomerDoc(customerId, kind) {
       return r && !varieties.includes(r.variety);
     });
     const how = reservationToo
-      ? "紐づけた予約にも品種が無いものがあります。先に「予約登録・一覧」でその予約の品種を選び、そのあと「出荷管理」で出荷を編集して品種を選んでください。"
-      : "「出荷管理」でこれらの出荷を編集して品種を選んでください。";
+      ? "紐づけた予約にも品種が無いものがあります。先に「注文」の「予約」でその予約の品種を選び、そのあと「注文」の「出荷」で出荷を編集して品種を選んでください。"
+      : "「注文」の「出荷」でこれらの出荷を編集して品種を選んでください。";
     notify(`品種が未設定または不明な出荷が${noVariety.length}件あるため、${title}を印刷できません（${list}${more}）。${how}`, "warn", 15000);
     return;
   }
   // 単価が0円（未入力）の品種があると、その分の金額が0円になる。サービス品などもあり得るので、確認してから印刷する
   const zeroPrice = [...new Set(rows.filter(r => r.unit === 0).map(r => r.s.variety))];
-  if (zeroPrice.length && !confirm(`単価が0円の品種があります（${zeroPrice.join("、")}）。この品種の金額は0円になります。\n\n単価を入れる場合は「キャンセル」を押し、「在庫管理」で単価を入力してください。\nこのまま${title}を印刷しますか？`)) return;
+  if (zeroPrice.length && !confirm(`単価が0円の品種があります（${zeroPrice.join("、")}）。この品種の金額は0円になります。\n\n単価を入れる場合は「キャンセル」を押し、「在庫・設定」で単価を入力してください。\nこのまま${title}を印刷しますか？`)) return;
   const total = rows.reduce((a, r) => a + r.amount, 0);
   const body = rows.map(({ s, unit, amount }) => `<tr><td>${esc(s.date)}</td><td>${esc(s.variety)}</td><td>${formatKg(s.kg)}</td><td>${yen(unit)}</td><td>${yen(amount)}</td></tr>`).join("");
   const doc = document.getElementById("docPrint");
@@ -3444,11 +3708,24 @@ window.addEventListener("afterprint", () => {
 });
 
 window.addEventListener("beforeprint", () => {
-  const tab = document.querySelector(".view-tab.active");
+  const panel = document.querySelector(".view-panel:not([hidden])");
+  const sub = panel && panel.querySelector(".sub-panel:not([hidden])");
+  const tab = sub ? panel.querySelector(".sub-tab.active") : document.querySelector(".view-tab.active .tab-label");
   const el = document.getElementById("printTitle");
   // 予約一覧で出荷済みを隠しているときは、紙にもそのことを残す
-  const filterNote = tab && tab.dataset.view === "reservationsView" && document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE ? "（出荷済み以外）" : "";
+  const filterNote = sub && sub.id === "reservationsView" && document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE ? "（出荷済み以外）" : "";
   if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}${filterNote}｜${todayString().replace(/-/g, "/")}`;
+});
+
+// 「？」で開く説明は、印刷のときだけ開いて紙にも出す（終わったら元の開き方に戻す）
+let helpBoxesOpenedForPrint = [];
+window.addEventListener("beforeprint", () => {
+  helpBoxesOpenedForPrint = [...document.querySelectorAll(".help-box:not([open])")];
+  helpBoxesOpenedForPrint.forEach(d => d.open = true);
+});
+window.addEventListener("afterprint", () => {
+  helpBoxesOpenedForPrint.forEach(d => d.open = false);
+  helpBoxesOpenedForPrint = [];
 });
 
 // ---------- バックアップ（書き出し・読み込み） ----------
@@ -3483,17 +3760,20 @@ function showBackupStatus() {
   // バックアップを取る端末（一度でも書き出した端末）でだけ、決めた日数がたったら書き出しをすすめる
   // （バックアップは、決めた1台の端末で取る決まりにしたため。ほかの端末で毎回知らせないように）
   const days = daysSinceBackup();
+  const due = days !== null && days >= BACKUP_REMIND_DAYS;
   const remind = document.getElementById("backupRemind");
-  if (!remind) return;
-  remind.hidden = days === null || days < BACKUP_REMIND_DAYS;
-  remind.textContent = `前回のバックアップから${days}日たっています。「データを書き出す」を押して、ファイルを保存してください。`;
+  remind.hidden = !due;
+  remind.textContent = due ? `前回のバックアップから${days}日たっています。「データを書き出す」を押して、ファイルを保存してください。` : "";
+  // ホームにも1行で知らせる
+  document.getElementById("homeBackupRemind").hidden = !due;
+  document.getElementById("homeBackupRemindText").textContent = due ? `前回のバックアップから${days}日たっています。` : "";
 }
 
 // 開いたときに、書き出しの時期が来ていれば一度だけ知らせる（バックアップを取る端末でだけ）
 function remindBackupOnce() {
   const days = daysSinceBackup();
   if (days === null || days < BACKUP_REMIND_DAYS) return;
-  notify(`前回のバックアップから${days}日たっています。画面のいちばん下の「データを書き出す」で、ファイルに保存してください。`, "warn", 12000);
+  notify(`前回のバックアップから${days}日たっています。「在庫・設定」の「データを書き出す」で、ファイルに保存してください。`, "warn", 12000);
 }
 
 // 今のデータからバックアップを作る（ファイルへの書き出しに使う）
@@ -3744,7 +4024,7 @@ document.getElementById("shipmentName").onchange = () => {
 };
 document.getElementById("shipmentReservation").onchange = syncShipmentVarietyWithReservation;
 setupCustomerPickers();
-document.querySelectorAll(".view-tab").forEach(e => e.onclick = () => switchView(e.dataset.view));
+document.querySelectorAll(".view-tab, .sub-tab").forEach(e => e.onclick = () => onTabClick(e.dataset.view));
 [...OLD_SHEET_KEYS, ...OLD_LOCAL_DATA_KEYS].forEach(k => {
   try {
     localStorage.removeItem(k);
@@ -3762,7 +4042,9 @@ const PAGE_ACTIONS = {
   addReservation, addShipment, cancelCustomerEdit, cancelEdit, cancelShipmentEdit,
   exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
   logout, printCurrentList, retryCloud, saveCustomer, showMoreRows,
+  openReservationForm, openShipmentForm, quickStatusFilter, showBackupPanel, toggleFab, toggleFilters,
   setStockMode: mode => setStockMode(mode),
+  showView: id => onTabClick(id),
   openImportFile: () => document.getElementById("importFile").click(),
   reloadPage: () => location.reload()
 };

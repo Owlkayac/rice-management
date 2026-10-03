@@ -1619,7 +1619,8 @@ function displayReservations() {
     const td = document.createElement("td");
     td.className = "action-cell";
     td.innerHTML = '<button class="edit-button">編集</button><button class="delete-button">削除</button>';
-    td.children[0].onclick = () => editReservation(i);
+    // 入力欄まで画面を動かす（スマホでは一覧が入力欄よりずっと下にあり、編集が始まったことに気づきにくいため）
+    td.children[0].onclick = () => openReservationEdit(r.id);
     td.children[1].onclick = () => deleteReservation(i);
     tr.appendChild(td);
     body.appendChild(tr);
@@ -2026,7 +2027,7 @@ function displayShipments() {
     const td = document.createElement("td");
     td.className = "action-cell";
     td.innerHTML = '<button class="edit-button">編集</button><button class="delete-button">削除</button>';
-    td.children[0].onclick = () => editShipment(i);
+    td.children[0].onclick = () => openShipmentEdit(s.id);
     td.children[1].onclick = () => deleteShipment(i);
     tr.appendChild(td);
     b.appendChild(tr);
@@ -2771,6 +2772,7 @@ function startShipmentFor(customerId) {
 
 // 「＋予約」「＋」→「予約を追加」：予約の入力フォームを、新しく追加する状態で開く
 function openReservationForm() {
+  closeFabMenu();
   if (!leaveReservationEdit()) return;
   switchView("reservationsView");
   document.getElementById("reservationForm").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -2779,6 +2781,7 @@ function openReservationForm() {
 
 // 「＋」→「出荷を登録」：出荷の入力フォームを、新しく登録する状態で開く
 function openShipmentForm() {
+  closeFabMenu();
   if (!leaveShipmentInput()) return;
   switchView("shipmentsView");
   document.getElementById("shipmentForm").scrollIntoView({ behavior: "smooth", block: "center" });

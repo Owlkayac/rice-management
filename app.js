@@ -37,8 +37,11 @@ const SHIPMENT_SORTS = ["recent", "dateDesc", "dateAsc", "name"];
 const CHANNELS = ["ウェブフォーム", "Instagram", "LINE", "電話・対面", "その他"];
 const STATUSES = { received: "受付済み", preparing: "出荷準備中", shipped: "出荷済み" };
 const STATUS_KEYS = ["received", "preparing", "shipped"];
-// 予約一覧の「状態」の絞り込みで、出荷済みを隠す選び方（はじめはこれを選んでおく）
+// 予約一覧の「状態」の絞り込みで、状態が「出荷済み」の予約を隠す選び方
 const STATUS_FILTER_ACTIVE = "active";
+// 予約一覧の「状態」の絞り込みで、まだ出荷していない分がある予約だけを出す選び方（はじめはこれを選んでおく）。
+// 予約の状態ではなく、登録した出荷で判断する（reservationIsUnshipped）
+const STATUS_FILTER_UNSHIPPED = "unshipped";
 // 一覧（予約・出荷・顧客）に一度に出す行の数。多いときは「もっと見る」で、この数ずつ増やす
 // （何千件も一度に表を作ると、スマホで表示や操作が遅くなるため。検索・絞り込み・CSV・合計は全件が対象）
 const LIST_PAGE_SIZE = 100;
@@ -541,9 +544,9 @@ function fillOptions() {
   document.getElementById("filterMonth").innerHTML = '<option value="">すべて</option>' + months.map(m => `<option>${m}</option>`).join("");
   document.getElementById("channel").innerHTML = '<option value="">未選択</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("");
   document.getElementById("filterChannel").innerHTML = '<option value="">すべて</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("") + '<option value="__none">未設定</option>';
-  document.getElementById("filterStatus").innerHTML = `<option value="">すべて</option><option value="${STATUS_FILTER_ACTIVE}">出荷済み以外</option>` + STATUS_KEYS.map(k => `<option value="${k}">${STATUSES[k]}</option>`).join("");
-  // はじめは出荷済みを隠す（毎日見るのは、まだ出荷していない予約がほとんどのため）
-  document.getElementById("filterStatus").value = STATUS_FILTER_ACTIVE;
+  document.getElementById("filterStatus").innerHTML = `<option value="">すべて</option><option value="${STATUS_FILTER_UNSHIPPED}">未出荷だけ（出荷の登録で判断）</option><option value="${STATUS_FILTER_ACTIVE}">状態が出荷済み以外</option>` + STATUS_KEYS.map(k => `<option value="${k}">${STATUSES[k]}</option>`).join("");
+  // はじめは未出荷の予約だけを出す（毎日見るのは、まだ出荷していない予約がほとんどのため）
+  document.getElementById("filterStatus").value = STATUS_FILTER_UNSHIPPED;
   refreshCustomerSelects();
 }
 
@@ -1299,6 +1302,7 @@ function commitReservation(r) {
   clearReservation();
   refreshAll();
   notifyNewCustomer(newCustomer);
+  notifyIfReservationHidden(r);
 }
 
 function editReservation(i) {
@@ -1461,7 +1465,44 @@ function resetListLimit(key) {
 function getVisibleReservations() {
   const fs = document.getElementById("filterStatus").value;
   const sortMode = document.getElementById("reservationSort").value;
-  return reservations.map((r, i) => ({ r, i })).filter(({ r }) => reservationMatchesFilters(r) && reservationMatchesStatus(r, fs)).sort(reservationComparator(sortMode));
+  const ctx = fs === STATUS_FILTER_UNSHIPPED ? unshippedContext() : null;
+  return reservations.map((r, i) => ({ r, i })).filter(({ r }) => reservationMatchesFilters(r) && reservationMatchesStatus(r, fs, ctx)).sort(reservationComparator(sortMode));
+}
+
+// 予約・出荷の持ち主を見分ける文字。顧客に結びついていれば顧客の id、そうでなければ
+// 「未出荷の顧客」の結びついていない一覧と同じく、残っている顧客の id か名前で分ける
+function ownerKey(item) {
+  const c = customerFor(item);
+  if (c) return `c:${c.customerId}`;
+  return item.customerId ? `id:${item.customerId}` : `name:${String(item.name || "").trim()}`;
+}
+
+// 「未出荷だけ」の判定に使う表を、予約・出荷を1回ずつ見て作る（予約ごとに全部の出荷を見直すと、件数が多いと遅いため）
+// - rest：持ち主・品種ごとの「予約kg−出荷kg」。品種が A〜F 以外のものは「品種なし」としてまとめる（unshippedByVariety と同じ数え方）
+// - linked：予約の id → その予約に紐づけた出荷kgの合計
+function unshippedContext() {
+  const rest = new Map();
+  const linked = new Map();
+  const add = (item, sign) => {
+    const key = `${ownerKey(item)}|${varieties.includes(item.variety) ? item.variety : ""}`;
+    rest.set(key, (rest.get(key) || 0) + sign * (Number(item.kg) || 0));
+  };
+  reservations.forEach(r => add(r, 1));
+  shipments.forEach(s => {
+    add(s, -1);
+    if (s.reservationId) linked.set(s.reservationId, (linked.get(s.reservationId) || 0) + (Number(s.kg) || 0));
+  });
+  return { rest, linked };
+}
+
+// 予約に、まだ出荷していない分があるか。次の2つがどちらも残っているときに「未出荷」とする
+// - その予約の残り（予約kg−その予約に紐づけた出荷kg）
+// - その顧客のその品種の残り（予約kg−出荷kg。予約に紐づけていない出荷も引く。ホーム・「未出荷の顧客」と同じ数え方）
+// 予約の状態（受付済み・出荷済みなど）は使わない
+function reservationIsUnshipped(r, ctx) {
+  if (unshippedKg(r.kg, ctx.linked.get(r.id) || 0) <= 0) return false;
+  const key = `${ownerKey(r)}|${varieties.includes(r.variety) ? r.variety : ""}`;
+  return Math.round((ctx.rest.get(key) || 0) * 100) / 100 > 0;
 }
 
 // 予約一覧の検索・品種・月・受付経路の条件に合うか（「状態」は見ない）
@@ -1479,23 +1520,42 @@ function reservationMatchesFilters(r) {
   return true;
 }
 
-// 予約一覧の「状態」の条件に合うか（fs が空なら、すべて合う。「出荷済み以外」なら、出荷済みでないものが合う）
-function reservationMatchesStatus(r, fs) {
+// 予約一覧の「状態」の条件に合うか（fs が空なら、すべて合う。「状態が出荷済み以外」なら、状態が出荷済みでないものが合う。
+// 「未出荷だけ」なら、まだ出荷していない分があるものが合う。ctx は unshippedContext の結果）
+function reservationMatchesStatus(r, fs, ctx) {
   if (!fs) return true;
   if (fs === STATUS_FILTER_ACTIVE) return statusOf(r) !== "shipped";
+  if (fs === STATUS_FILTER_UNSHIPPED) return reservationIsUnshipped(r, ctx || unshippedContext());
   return statusOf(r) === fs;
 }
 
-// 「出荷済み以外」を選んでいるときに、ほかの条件には合うが、出荷済みなので隠している予約の件数（選んでいなければ 0）
+// 「未出荷だけ」か「状態が出荷済み以外」を選んでいるときに、ほかの条件には合うが、出荷し終えた（または状態が出荷済みの）ため
+// 隠している予約の件数（どちらも選んでいなければ 0）
 function hiddenShippedCount() {
-  if (document.getElementById("filterStatus").value !== STATUS_FILTER_ACTIVE) return 0;
-  return reservations.filter(r => statusOf(r) === "shipped" && reservationMatchesFilters(r)).length;
+  const fs = document.getElementById("filterStatus").value;
+  if (fs !== STATUS_FILTER_ACTIVE && fs !== STATUS_FILTER_UNSHIPPED) return 0;
+  const ctx = fs === STATUS_FILTER_UNSHIPPED ? unshippedContext() : null;
+  return reservations.filter(r => reservationMatchesFilters(r) && !reservationMatchesStatus(r, fs, ctx)).length;
+}
+
+// 隠している予約を何と呼ぶか（選んでいる絞り込みに合わせる）
+function hiddenReservationLabel() {
+  return document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE ? "状態が出荷済みの予約" : "出荷し終えた予約";
+}
+
+// 追加・編集した予約が、今の絞り込みでは一覧に出ないときに知らせる
+// （一覧で見つからないと「登録できなかった」と思い、もう一度登録して同じ予約が2件になるのを防ぐため）
+function notifyIfReservationHidden(r) {
+  const fs = document.getElementById("filterStatus").value;
+  if (fs !== STATUS_FILTER_UNSHIPPED || !reservationMatchesFilters(r)) return;
+  if (withCustomerLookup(() => reservationIsUnshipped(r, unshippedContext()))) return;
+  notify("予約を保存しました。この予約は出荷を登録し終えた扱いのため、今の表示（未出荷だけ）では一覧に出ません。上の「すべて」を押すと見られます。", "info", 10000);
 }
 
 // 予約を「出荷済み」にしたとき、「出荷済み以外」の表示で一覧から消えるので、消えた理由を知らせる
 function notifyShippedHidden() {
   if (document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE) {
-    notify("出荷済みにしました。今は「未出荷だけ」を表示しているので、一覧からは隠れます（上の「すべて」を押すと見られます）。", "info", 8000);
+    notify("出荷済みにしました。今は「状態が出荷済み以外」を表示しているので、一覧からは隠れます（上の「すべて」を押すと見られます）。", "info", 8000);
   }
 }
 
@@ -1513,7 +1573,7 @@ function displayReservations() {
   const visible = getVisibleReservations();
   const shown = limitRows(visible, "reservations");
   const hiddenShipped = hiddenShippedCount();
-  showListMore("reservations", shown.length, visible.length, hiddenShipped ? `出荷済みの予約${hiddenShipped}件は隠しています（上の「すべて」を押すと見られます）。` : "");
+  showListMore("reservations", shown.length, visible.length, hiddenShipped ? `${hiddenReservationLabel()}${hiddenShipped}件は隠しています（上の「すべて」を押すと見られます）。` : "");
   shown.forEach(({ r, i }) => {
     const tr = document.createElement("tr");
     [varietyLabel(r.variety), monthLabel(r.month), customerName(r), formatKg(r.kg)].forEach((v, n) => {
@@ -2767,7 +2827,7 @@ document.addEventListener("keydown", e => {
 // 予約一覧の「未出荷だけ」「すべて」。value は「状態」の欄に入れる値（"active" か、空＝すべて）
 function quickStatusFilter(value) {
   const select = document.getElementById("filterStatus");
-  select.value = value === STATUS_FILTER_ACTIVE ? STATUS_FILTER_ACTIVE : "";
+  select.value = value === STATUS_FILTER_UNSHIPPED ? STATUS_FILTER_UNSHIPPED : "";
   resetListLimit("reservations");
   refreshAll();
 }
@@ -2782,14 +2842,14 @@ function toggleFilters() {
 // 「未出荷だけ」「すべて」ボタンの押されている表示と、閉じた絞り込みに条件が入っているかの表示を合わせる
 function showReservationFilterState() {
   const status = document.getElementById("filterStatus").value;
-  [["quickFilterActive", STATUS_FILTER_ACTIVE], ["quickFilterAll", ""]].forEach(([id, value]) => {
+  [["quickFilterUnshipped", STATUS_FILTER_UNSHIPPED], ["quickFilterAll", ""]].forEach(([id, value]) => {
     const on = status === value;
     const button = document.getElementById(id);
     button.classList.toggle("active", on);
     button.setAttribute("aria-pressed", on ? "true" : "false");
   });
   // 状態を「受付済み」などにしているときや、品種・月・受付経路で絞っているときは、閉じていても分かるようにする
-  const narrowed = ["filterVariety", "filterMonth", "filterChannel"].some(id => document.getElementById(id).value) || (status !== "" && status !== STATUS_FILTER_ACTIVE);
+  const narrowed = ["filterVariety", "filterMonth", "filterChannel"].some(id => document.getElementById(id).value) || (status !== "" && status !== STATUS_FILTER_UNSHIPPED);
   document.getElementById("reservationFiltersToggle").textContent = narrowed ? "絞り込み・並び順（条件あり）" : "絞り込み・並び順";
 }
 
@@ -3657,6 +3717,11 @@ function dateStamp() {
 }
 
 function exportReservationsCsv() {
+  withCustomerLookup(exportVisibleReservationsCsv);
+}
+
+// 並べ替え・絞り込み・件数の数え直しで顧客を何度も探すので、顧客を探すための表を使う（exportReservationsCsv から呼ぶ）
+function exportVisibleReservationsCsv() {
   const rows = getVisibleReservations().map(({ r }) => [r.variety, r.month, customerName(r), roundKg(r.kg), channelOf(r) || "未設定", STATUSES[statusOf(r)]]);
   if (!rows.length) {
     notify("書き出す予約がありません", "warn");
@@ -3664,7 +3729,7 @@ function exportReservationsCsv() {
   }
   downloadCsv(`reservations-${dateStamp()}.csv`, ["品種", "月", "名前", "kg", "受付経路", "状態"], rows);
   const hiddenShipped = hiddenShippedCount();
-  notify(`予約${rows.length}件をCSVに書き出しました（表示中の絞り込み・並び順のとおり）${hiddenShipped ? `。出荷済みの予約${hiddenShipped}件は入っていません（入れるときは、「状態」で「すべて」を選んでから書き出してください）` : ""}`, hiddenShipped ? "info" : "success", hiddenShipped ? 10000 : undefined);
+  notify(`予約${rows.length}件をCSVに書き出しました（表示中の絞り込み・並び順のとおり）${hiddenShipped ? `。${hiddenReservationLabel()}${hiddenShipped}件は入っていません（入れるときは、上の「すべて」を押してから書き出してください）` : ""}`, hiddenShipped ? "info" : "success", hiddenShipped ? 10000 : undefined);
 }
 
 function exportShipmentsCsv() {
@@ -3713,7 +3778,8 @@ window.addEventListener("beforeprint", () => {
   const tab = sub ? panel.querySelector(".sub-tab.active") : document.querySelector(".view-tab.active .tab-label");
   const el = document.getElementById("printTitle");
   // 予約一覧で出荷済みを隠しているときは、紙にもそのことを残す
-  const filterNote = sub && sub.id === "reservationsView" && document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE ? "（出荷済み以外）" : "";
+  const status = document.getElementById("filterStatus").value;
+  const filterNote = sub && sub.id === "reservationsView" ? { [STATUS_FILTER_UNSHIPPED]: "（未出荷だけ）", [STATUS_FILTER_ACTIVE]: "（状態が出荷済み以外）" }[status] || "" : "";
   if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}${filterNote}｜${todayString().replace(/-/g, "/")}`;
 });
 

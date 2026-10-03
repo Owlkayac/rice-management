@@ -26,6 +26,8 @@ begin
   if to_regclass('public.app_members') is not null
      or to_regclass('public.audit_log') is not null
      or to_regprocedure('public.is_app_member()') is not null
+     or to_regclass('public.app_security') is not null
+     or to_regprocedure('public.mfa_satisfied()') is not null
      or exists (select 1 from pg_policies where schemaname = 'public' and policyname = 'members only') then
     raise exception 'このファイルは実行できません。ログイン機能を入れたあとに実行すると、データが消え、ルールが「誰でも読み書きできる」に戻るためです。何も変わっていません。歩留まりの列を足すときは supabase-yield.sql を実行してください。';
   end if;

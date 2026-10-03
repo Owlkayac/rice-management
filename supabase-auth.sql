@@ -5,6 +5,12 @@
 -- ・テーブルの中のデータ（予約・出荷・顧客・在庫・単価）は消しません。
 -- ・もう一度実行しても、同じ状態になるだけです（使う人のリストも消えません）。
 -- ・一度実行してログインできているなら、ふだんはもう実行しなくて大丈夫です（中身を変えたと案内されたときだけ、もう一度実行します）。
+-- ・【2段階認証の追加（2026年10月）】このとき中身を変えました。もう一度実行してください（データは消えません）。
+--   実行したかの確かめ方（読むだけ）：select to_regclass('public.app_security');
+--   → app_security と出たら実行済みなので、もう実行しなくて大丈夫です。NULL なら、まだです。
+--   実行しても、2段階認証の守り（mfa_required）は「入っていない（false）」のままです。守りを入れるのは、
+--   使う人全員が認証アプリの登録を済ませたあとで、手順書の「切り替えの SQL」で行います。
+--   一度 true にしたあとで、このファイルをもう一度実行しても、false には戻りません。
 
 -- ① 使う人のリスト（ここにメールアドレスがある人だけが、データを読み書きできる）
 create table if not exists public.app_members (
@@ -64,7 +70,40 @@ create trigger touch_updated_at before update on public.shipments for each row e
 drop trigger if exists touch_updated_at on public.variety_settings;
 create trigger touch_updated_at before update on public.variety_settings for each row execute function public.touch_updated_at();
 
--- ④ 仮のルール「temp all（誰でも読み書きできる）」を消して、「使う人だけ読み書きできる」ルールに変える
+-- ④ 2段階認証の守りの切り替え（app_security）と、守りを確かめる関数（mfa_satisfied）
+--    守りを入れる（mfa_required = true）と、認証アプリのコードまで済ませたログイン（aal2）だけが、4つのテーブルを読み書きできる。
+--    表は1行だけ（id は true だけ）。アプリ（anon・authenticated）からは、読むことも書くこともできない
+create table if not exists public.app_security (
+  id boolean primary key default true check (id),
+  mfa_required boolean not null default false
+);
+alter table public.app_security enable row level security;
+revoke all on public.app_security from anon, authenticated;
+-- 行を作る（もう行があるときは何もしない。すでに true にしてある値を false に戻さない）
+insert into public.app_security (id) values (true) on conflict (id) do nothing;
+
+-- 守りを満たしているか。行が無い・値が NULL のときは「守りあり」として扱う（aal2 を求める）。
+-- 守りなし（mfa_required = false）のときだけ、コードなしのログインでも true
+create or replace function public.mfa_satisfied()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select case
+    when (select mfa_required from public.app_security where id) is false then true
+    else coalesce(auth.jwt() ->> 'aal', '') = 'aal2'
+  end;
+$$;
+-- 両方必要（grant が無いと、ルールを確かめるときに permission denied になり、全員が読み書きできなくなる）
+revoke execute on function public.mfa_satisfied() from public, anon;
+grant execute on function public.mfa_satisfied() to authenticated;
+
+-- ⑤ 仮のルール「temp all（誰でも読み書きできる）」を消して、「使う人だけ（守りを入れたあとは、コードまで済ませた人だけ）読み書きできる」ルールに変える
+--    途中でエラーが出たとき、ルールが消えただけの状態で止まらないよう、begin 〜 commit で囲む
+--    （エラーが出たら、この中の変更はすべて取り消される）
+begin;
 drop policy if exists "temp all" on public.reservations;
 drop policy if exists "temp all" on public.customers;
 drop policy if exists "temp all" on public.shipments;
@@ -75,12 +114,24 @@ drop policy if exists "members only" on public.customers;
 drop policy if exists "members only" on public.shipments;
 drop policy if exists "members only" on public.variety_settings;
 
-create policy "members only" on public.reservations for all to authenticated using ((select public.is_app_member())) with check ((select public.is_app_member()));
-create policy "members only" on public.customers for all to authenticated using ((select public.is_app_member())) with check ((select public.is_app_member()));
-create policy "members only" on public.shipments for all to authenticated using ((select public.is_app_member())) with check ((select public.is_app_member()));
-create policy "members only" on public.variety_settings for all to authenticated using ((select public.is_app_member())) with check ((select public.is_app_member()));
+create policy "members only" on public.reservations for all to authenticated
+  using ((select public.is_app_member()) and (select public.mfa_satisfied()))
+  with check ((select public.is_app_member()) and (select public.mfa_satisfied()));
+create policy "members only" on public.customers for all to authenticated
+  using ((select public.is_app_member()) and (select public.mfa_satisfied()))
+  with check ((select public.is_app_member()) and (select public.mfa_satisfied()));
+create policy "members only" on public.shipments for all to authenticated
+  using ((select public.is_app_member()) and (select public.mfa_satisfied()))
+  with check ((select public.is_app_member()) and (select public.mfa_satisfied()));
+create policy "members only" on public.variety_settings for all to authenticated
+  using ((select public.is_app_member()) and (select public.mfa_satisfied()))
+  with check ((select public.is_app_member()) and (select public.mfa_satisfied()));
+commit;
 
--- ⑤ ログインしていない人（anon）からは、4つのテーブルを読み書きできないようにする
+-- 実行したあと、各テーブルのルールが「members only」の1つだけかを確かめる（読むだけ）：
+--   select tablename, policyname from pg_policies where schemaname = 'public';
+
+-- ⑥ ログインしていない人（anon）からは、4つのテーブルを読み書きできないようにする
 revoke all on public.reservations from anon;
 revoke all on public.customers from anon;
 revoke all on public.shipments from anon;

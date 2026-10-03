@@ -223,7 +223,7 @@ function unshippedKg(reserved, shipped) {
 
 // 品種ごと（A〜F と「品種なし」）に「予約−出荷」を出し、残っている分（0未満は0）の合計と、予約より多く出荷した分の合計を返す。
 // 品種をまたいで差し引くと、ある品種の出しすぎが別の品種の残りを打ち消し、残りを見落とすため、品種ごとに数える
-// items には、残りがある品種ごとの { label: 品種名, kg: 残り } が入る
+// items には、残りがある品種ごとの { label: 品種名, kg: 残り } が入る。overItems には、予約より多く出荷した品種ごとの { label, kg: 多い分 } が入る
 function unshippedByVariety(reservationList, shipmentList) {
   // A〜F の7つめとして、A〜F 以外（品種なし・不明）のグループも数える
   const groups = [
@@ -233,23 +233,25 @@ function unshippedByVariety(reservationList, shipmentList) {
   let remaining = 0;
   let over = 0;
   const items = [];
+  const overItems = [];
   groups.forEach(({ label, match }) => {
     const rest = unshippedKg(sumKg(reservationList.filter(match)), sumKg(shipmentList.filter(match)));
     if (rest > 0) {
       remaining += rest;
       items.push({ label, kg: rest });
-    } else {
+    } else if (rest < 0) {
       over -= rest;
+      overItems.push({ label, kg: -rest });
     }
   });
-  return { remaining: roundKg(remaining), over: roundKg(over), items };
+  return { remaining: roundKg(remaining), over: roundKg(over), items, overItems };
 }
 
-// 表のマスに入れる未出荷量（HTML）。マイナスにはせず0kgと出し、予約より多く出荷した分を下に小さく添える
-// （予約に紐づけていない出荷などで、出荷が予約を超えることがあるため。中身は数字だけなので innerHTML に入れてよい）
-function unshippedCellHtml(reserved, shipped) {
-  const rest = unshippedKg(reserved, shipped);
-  return rest >= 0 ? formatKg(rest) : `0kg<small class="over-shipped">${formatKg(-rest)}多く出荷</small>`;
+// 出荷集計の表のマスに入れる未出荷量（HTML）。total は unshippedSummary().byVariety の1品種分（{ remaining, over }）。
+// 残りを出し、予約より多く出荷した顧客の分があれば下に小さく添える（中身は数字だけなので innerHTML に入れてよい）
+function unshippedCellHtml(total) {
+  const t = total || { remaining: 0, over: 0 };
+  return formatKg(t.remaining) + (t.over > 0 ? `<small class="over-shipped">${t.remaining > 0 ? "ほかに" : ""}${formatKg(t.over)}多く出荷</small>` : "");
 }
 
 // 品種を表示用の文字にする（古いデータで品種が無いときに「undefined」と出ないように）。
@@ -370,13 +372,13 @@ function shippedForReservation(r) {
 }
 
 function remainingForReservation(r) {
-  return (Number(r.kg) || 0) - shippedForReservation(r);
+  return unshippedKg(r.kg, shippedForReservation(r));
 }
 
 function openReservationsFor(customerId, excludeShipmentId) {
   return reservations.map((r, i) => ({ r, i })).filter(({ r }) => customerFor(r)?.customerId === customerId).map(({ r, i }) => ({
     r, i, shipped: shipments.reduce((a, s) => a + (s.reservationId === r.id && s.id !== excludeShipmentId ? Number(s.kg) || 0 : 0), 0)
-  })).map(x => ({ ...x, remaining: (Number(x.r.kg) || 0) - x.shipped }));
+  })).map(x => ({ ...x, remaining: unshippedKg(x.r.kg, x.shipped) }));
 }
 
 function refreshShipmentReservationOptions(selectedReservationId) {
@@ -1471,28 +1473,40 @@ function getVisibleReservations() {
 
 // 予約・出荷の持ち主を見分ける文字。顧客に結びついていれば顧客の id、そうでなければ
 // 「未出荷の顧客」の結びついていない一覧と同じく、残っている顧客の id か名前で分ける
+// 品種のまとめ方（A〜F 以外は「品種なし」）。unshippedByVariety の label と同じ
+function varietyGroupLabel(v) {
+  return varieties.includes(v) ? v : "品種なし";
+}
+
 function ownerKey(item) {
   const c = customerFor(item);
   if (c) return `c:${c.customerId}`;
   return item.customerId ? `id:${item.customerId}` : `name:${String(item.name || "").trim()}`;
 }
 
-// 「未出荷だけ」の判定に使う表を、予約・出荷を1回ずつ見て作る（予約ごとに全部の出荷を見直すと、件数が多いと遅いため）
-// - rest：持ち主・品種ごとの「予約kg−出荷kg」。品種が A〜F 以外のものは「品種なし」としてまとめる（unshippedByVariety と同じ数え方）
-// - linked：予約の id → その予約に紐づけた出荷kgの合計
+// 「未出荷だけ」の判定と「出荷の登録が足りません」の目印に使う表
+// - rest：持ち主・品種ごとの未出荷（unshippedSummary の restByOwner。残りがあるものだけ）
+// - linked：予約の id → その予約に紐づけた出荷kgの合計（予約・出荷を1回ずつ見て作る）
 function unshippedContext() {
-  const rest = new Map();
   const linked = new Map();
-  const add = (item, sign) => {
-    const key = `${ownerKey(item)}|${varieties.includes(item.variety) ? item.variety : ""}`;
-    rest.set(key, (rest.get(key) || 0) + sign * (Number(item.kg) || 0));
-  };
-  reservations.forEach(r => add(r, 1));
   shipments.forEach(s => {
-    add(s, -1);
     if (s.reservationId) linked.set(s.reservationId, (linked.get(s.reservationId) || 0) + (Number(s.kg) || 0));
   });
-  return { rest, linked };
+  return { rest: unshippedSummary().restByOwner, linked };
+}
+
+// 予約の持ち主・品種に残っている未出荷（kg）。残りが無ければ 0
+function ownerVarietyRest(r, ctx) {
+  return ctx.rest.get(`${ownerKey(r)}|${varietyGroupLabel(r.variety)}`) || 0;
+}
+
+// 予約の状態が「出荷済み」なのに、出荷の登録が足りないときの足りない量（kg）。当てはまらなければ 0（目印だけで、数字は変えない）
+// その顧客・品種に未出荷が残っていて、しかもその予約自身の残り（予約kg−紐づけた出荷kg）もあるときだけにする
+// （同じ顧客・品種の別の予約の残りで、出荷し終えた予約にまで目印が付かないように）。量は2つの残りの小さいほう
+function shippedStatusShortage(r, ctx) {
+  if (statusOf(r) !== "shipped") return 0;
+  const own = unshippedKg(r.kg, ctx.linked.get(r.id) || 0);
+  return own > 0 ? roundKg(Math.min(own, ownerVarietyRest(r, ctx))) : 0;
 }
 
 // 予約に、まだ出荷していない分があるか。次の2つがどちらも残っているときに「未出荷」とする
@@ -1501,8 +1515,7 @@ function unshippedContext() {
 // 予約の状態（受付済み・出荷済みなど）は使わない
 function reservationIsUnshipped(r, ctx) {
   if (unshippedKg(r.kg, ctx.linked.get(r.id) || 0) <= 0) return false;
-  const key = `${ownerKey(r)}|${varieties.includes(r.variety) ? r.variety : ""}`;
-  return Math.round((ctx.rest.get(key) || 0) * 100) / 100 > 0;
+  return ownerVarietyRest(r, ctx) > 0;
 }
 
 // 予約一覧の検索・品種・月・受付経路の条件に合うか（「状態」は見ない）
@@ -1568,6 +1581,7 @@ function revealListRow(key, index) {
 
 function displayReservations() {
   showReservationFilterState();
+  const ctx = unshippedContext();
   const body = document.getElementById("reservationList");
   body.innerHTML = "";
   const visible = getVisibleReservations();
@@ -1592,6 +1606,7 @@ function displayReservations() {
     channelTd.textContent = channelOf(r) || "未設定";
     tr.appendChild(channelTd);
     const statusTd = document.createElement("td");
+    statusTd.className = "status-cell";
     statusTd.dataset.label = "状態";
     const sel = document.createElement("select");
     sel.className = `status-select status-${statusOf(r)}`;
@@ -1615,6 +1630,14 @@ function displayReservations() {
       if (e.target.value === "shipped") notifyShippedHidden();
     };
     statusTd.appendChild(sel);
+    // 状態が「出荷済み」なのに出荷の登録が足りないときは、目印を出す（数字は変えない）
+    const shortage = shippedStatusShortage(r, ctx);
+    if (shortage > 0) {
+      const warn = document.createElement("small");
+      warn.className = "status-shortage";
+      warn.textContent = `出荷の登録が足りません（${formatKg(shortage)}）`;
+      statusTd.appendChild(warn);
+    }
     tr.appendChild(statusTd);
     const td = document.createElement("td");
     td.className = "action-cell";
@@ -1675,13 +1698,13 @@ function displayDashboard() {
   document.getElementById("dashboardInventory").textContent = formatKg(varieties.reduce((a, v) => a + (Number(inventory[v]) || 0), 0));
   document.getElementById("dashboardShippable").textContent = `出荷できる量（精米後）：${formatKg(varieties.reduce((a, v) => a + shippableKg(v), 0))}`;
   document.getElementById("dashboardShipments").textContent = formatKg(getShippedTotalsAll());
-  // 未出荷量は品種ごとの残りの合計（出荷集計の「未出荷」列の合計と同じ）
-  const unshipped = unshippedByVariety(reservations, shipments);
+  // 未出荷量は、顧客ごと・品種ごとの残りの合計（「未出荷の顧客」の合計、出荷集計の「未出荷」列の合計と同じ）
+  const unshipped = unshippedSummary();
   document.getElementById("dashboardUnshippedTotal").textContent = formatKg(unshipped.remaining);
   const unshippedNote = document.getElementById("dashboardUnshippedNote");
   if (unshippedNote) {
     unshippedNote.hidden = unshipped.over <= 0;
-    unshippedNote.textContent = unshipped.over > 0 ? `予約より多く出荷した品種があります（合計${formatKg(unshipped.over)}）` : "";
+    unshippedNote.textContent = unshipped.over > 0 ? `予約より多く出荷した顧客・品種があります（合計${formatKg(unshipped.over)}）` : "";
   }
   document.getElementById("dashboardChannelBody").innerHTML = [...CHANNELS, ""].map(ch => {
     const list = reservations.filter(r => channelOf(r) === ch);
@@ -2038,14 +2061,16 @@ function displayShipments() {
   const r = getReservedTotals();
   const s = getShippedTotals();
   const body = document.getElementById("shipmentSummaryBody");
-  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(shippableKg(v))}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${unshippedCellHtml(r[v], s[v])}</td></tr>`);
+  // 「未出荷」列は、その品種の顧客ごとの残りの合計（予約量−出荷量とは合わないことがある。予約より多く出荷した顧客の分を、ほかの顧客の残りから引かないため）
+  const byVariety = unshippedSummary().byVariety;
+  const rows = varieties.map(v => `<tr><th>${v}</th><td>${formatKg(inventory[v])}</td><td>${formatKg(shippableKg(v))}</td><td>${formatKg(r[v])}</td><td>${formatKg(s[v])}</td><td>${unshippedCellHtml(byVariety.get(v))}</td></tr>`);
   // 品種が入っていない（または不明な）予約・出荷も、表から消えないように「品種なし」の行にまとめる（在庫とは結びつけられないので在庫量・出荷できる量は「—」）
   const unknownReservations = unknownVarietyItems(reservations);
   const unknownShipments = unknownVarietyItems(shipments);
   if (unknownReservations.length || unknownShipments.length) {
     const unknownReserved = sumKg(unknownReservations);
     const unknownShipped = sumKg(unknownShipments);
-    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${unshippedCellHtml(unknownReserved, unknownShipped)}</td></tr>`);
+    rows.push(`<tr class="stock-unknown"><th>品種なし</th><td>—</td><td>—</td><td>${formatKg(unknownReserved)}</td><td>${formatKg(unknownShipped)}</td><td>${unshippedCellHtml(byVariety.get("品種なし"))}</td></tr>`);
   }
   body.innerHTML = rows.join("");
 }
@@ -2100,9 +2125,9 @@ function customerStats(c, groups) {
   });
   const reserved = sumKg(rs);
   const shipped = sumKg(ss);
-  const { remaining, over, items } = unshippedByVariety(rs, ss);
+  const { remaining, over, items, overItems } = unshippedByVariety(rs, ss);
   return {
-    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items
+    rs, ss, byV, shipV, month, reserved, shipped, unshipped: remaining, overShipped: over, unshippedItems: items, overItems
   };
 }
 
@@ -2145,10 +2170,54 @@ function displayCustomers() {
   });
 }
 
+// 未出荷の集計。未出荷は、持ち主（登録済みの顧客、または顧客に結びついていない名前・id のまとまり）ごと・品種ごとに
+// 「予約kg−出荷kg」を出し、残りがある分だけを足した量（予約の状態は使わない）。
+// ホーム・「未出荷の顧客」・集計の未出荷量・出荷集計の「未出荷」列・「未出荷だけ」は、すべてこの結果を使う（画面ごとに計算しない）
+// - customerRows：登録済みの顧客ごとの { c, s }（s は customerStats）
+// - unlinked：顧客に結びついていないまとまり（unlinkedGroups の結果に unshipped を足したもの）
+// - remaining・over：全体の未出荷の合計と、予約より多く出荷した分の合計
+// - byVariety：品種（label）→ { remaining, over }
+// - restByOwner：`持ち主|品種` → 残り（残りがあるものだけ）
+function unshippedSummary() {
+  return withCustomerLookup(() => {
+    // 描き直しの間は、1回集計したものを使い回す（描き直しでは予約・出荷も変えない。
+    // withCustomerLookup の中で reservations・shipments を書きかえる処理を足さないこと。足すと古い数字が出る）
+    const lookup = currentCustomerLookup();
+    if (lookup.unshippedSummary) return lookup.unshippedSummary;
+    const groups = groupItemsByCustomer();
+    const customerRows = customers.map(c => ({ c, s: customerStats(c, groups) }));
+    const unlinked = unlinkedGroups().map(g => ({ ...g, unshipped: unshippedByVariety(g.rs, g.ss) }));
+    const owners = [
+      ...customerRows.map(({ c, s }) => ({ key: `c:${c.customerId}`, items: s.unshippedItems, overItems: s.overItems })),
+      ...unlinked.map(g => ({ key: g.key, items: g.unshipped.items, overItems: g.unshipped.overItems }))
+    ];
+    const byVariety = new Map();
+    const restByOwner = new Map();
+    const varietyTotal = label => {
+      if (!byVariety.has(label)) byVariety.set(label, { remaining: 0, over: 0 });
+      return byVariety.get(label);
+    };
+    let remaining = 0;
+    let over = 0;
+    owners.forEach(o => {
+      o.items.forEach(i => {
+        remaining += i.kg;
+        varietyTotal(i.label).remaining = roundKg(varietyTotal(i.label).remaining + i.kg);
+        restByOwner.set(`${o.key}|${i.label}`, i.kg);
+      });
+      o.overItems.forEach(i => {
+        over += i.kg;
+        varietyTotal(i.label).over = roundKg(varietyTotal(i.label).over + i.kg);
+      });
+    });
+    lookup.unshippedSummary = { customerRows, unlinked, remaining: roundKg(remaining), over: roundKg(over), byVariety, restByOwner };
+    return lookup.unshippedSummary;
+  });
+}
+
 // 顧客ごとの未出荷（品種ごとの残りの合計）が0より大きい顧客を、多い順に並べる（ホームと「未出荷の顧客」で使う）
 function unshippedCustomerList() {
-  const groups = groupItemsByCustomer();
-  return customers.map(c => ({ c, s: customerStats(c, groups) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
+  return unshippedSummary().customerRows.filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
 }
 
 // 品種ごとの残りを「A 10kg、B 5kg」の形の文字にする
@@ -2199,8 +2268,14 @@ function displayUnlinkedUnshipped() {
   }
 }
 
-// 顧客に結びついていない予約・出荷を、名前ごと（顧客の id が残っているものは id ごと）にまとめ、未出荷が残っているまとまりを多い順に返す
+// 顧客に結びついていない予約・出荷のまとまりのうち、未出荷が残っているものを多い順に返す
 function unlinkedUnshippedGroups() {
+  return unshippedSummary().unlinked.filter(g => g.unshipped.remaining > 0).sort((a, b) => b.unshipped.remaining - a.unshipped.remaining);
+}
+
+// 顧客に結びついていない予約・出荷を、名前ごと（顧客の id が残っているものは id ごと）にまとめる。
+// key は ownerKey と同じ形（id:… か name:…）
+function unlinkedGroups() {
   const groups = new Map();
   const add = (item, kind) => {
     if (customerFor(item)) return;
@@ -2212,7 +2287,7 @@ function unlinkedUnshippedGroups() {
     const trimmed = rawName.trim();
     const key = missingCustomer ? `id:${item.customerId}` : `name:${trimmed}`;
     if (!groups.has(key)) {
-      groups.set(key, { name: trimmed || "（名前なし）", noName: !trimmed, names: new Set(), missingCustomer, hasSpacedName: false, rs: [], ss: [] });
+      groups.set(key, { key, name: trimmed || "（名前なし）", noName: !trimmed, names: new Set(), missingCustomer, hasSpacedName: false, rs: [], ss: [] });
     }
     const g = groups.get(key);
     // 顧客の id ごとのまとまりでは、予約・出荷によって名前の書き方が違うことがあるので、出てきた名前をすべて覚えておく
@@ -2228,7 +2303,7 @@ function unlinkedUnshippedGroups() {
   };
   reservations.forEach(r => add(r, "rs"));
   shipments.forEach(s => add(s, "ss"));
-  return [...groups.values()].map(g => ({ ...g, unshipped: unshippedByVariety(g.rs, g.ss) })).filter(g => g.unshipped.remaining > 0).sort((a, b) => b.unshipped.remaining - a.unshipped.remaining);
+  return [...groups.values()];
 }
 
 // 顧客が登録されていない名前1つ分の表示（利用者の入力は textContent で入れる）
@@ -2647,7 +2722,27 @@ const HOME_UNSHIPPED_LIMIT = 10;
 
 function displayHome() {
   displayHomeUnshipped();
+  displayHomeShortage();
   displayHomeStock();
+}
+
+// 状態が「出荷済み」なのに、その顧客・品種に未出荷が残っている予約の件数を1行で知らせる
+function displayHomeShortage() {
+  const ctx = unshippedContext();
+  const count = reservations.filter(r => shippedStatusShortage(r, ctx) > 0).length;
+  document.getElementById("homeShortageNote").hidden = !count;
+  document.getElementById("homeShortageText").textContent = count ? `状態が「出荷済み」なのに、出荷の登録が足りない予約が${count}件あります。` : "";
+}
+
+// ホームの「予約一覧で見る」：予約一覧を、状態が「出荷済み」の予約で絞って開く（目印は一覧の「状態」の欄に出る）
+function showShippedShortage() {
+  // ほかの絞り込みで目印のある予約が隠れないよう、検索・品種・月・受付経路は空に戻す
+  ["searchName", "filterVariety", "filterMonth", "filterChannel"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("filterStatus").value = "shipped";
+  resetListLimit("reservations");
+  switchView("reservationsView");
+  refreshAll();
+  document.getElementById("reservationList").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // 未出荷の顧客（多い順）。顧客名・品種ごとの残り・電話番号と「出荷する」ボタン
@@ -3224,7 +3319,9 @@ async function runCloudSave() {
   try {
     while (cloudSaveQueued) {
       cloudSaveQueued = false;
-      const error = await sendCloudChanges();
+      // 送る前に、コードまで済ませたログインかを確かめる（aal2 でないと、更新・削除が0行で終わり、
+      // 「ほかの人が変えた」という的外れな案内になるため）
+      const error = await checkCloudAal2() || await sendCloudChanges();
       if (error && error.conflict) {
         handleCloudConflict(error.conflict);
         break;
@@ -3234,7 +3331,9 @@ async function runCloudSave() {
         cloudSaveQueued = true;
         cloudSaveError = error;
         // 画面の下のほうを操作していても気づけるよう、お知らせも出す
-        notify("Supabase に保存できませんでした。画面のいちばん上の赤い枠を見てください。", "error", 10000);
+        notify(error.code === "AAL"
+          ? "ログインの確認が切れたため、Supabase に保存できませんでした。画面のいちばん上の赤い枠を見てください。"
+          : "Supabase に保存できませんでした。画面のいちばん上の赤い枠を見てください。", "error", 10000);
         break;
       }
       cloudSaveError = null;
@@ -3267,6 +3366,8 @@ function retryCloud() {
 function explainCloudError(error) {
   const text = `${error.message} ${error.code} ${error.details || ""}`;
   if (error.code === "SETUP") return "";
+  if (error.code === "AAL") return "ページを開き直すと、認証アプリのコードを聞かれます（保存できていない変更は、開き直すと消えます）。";
+  if (error.code === "EMPTY") return "ページを開き直してください。開き直しても空のときは、管理する人に、データが残っているか確かめてもらってください。";
   if (error.code === "DUPLICATE") return "「データを書き出す」でファイルに控えてから、ページを開き直してください。";
   if (error.code === "TIMEOUT") return "インターネットにつながっているか確かめてください。";
   if (/Failed to fetch|NetworkError|Load failed/i.test(text)) {
@@ -3279,7 +3380,7 @@ function explainCloudError(error) {
     return "ログインの期限が切れました。ページを開き直して、もう一度ログインしてください。";
   }
   if (error.code === "42501" || /permission denied|row-level security/i.test(text)) {
-    return "Supabase の行ごとのアクセス制限（RLS）で止められています。ログインしている人が、使う人のリスト（app_members）に入っているか、管理する人に確かめてもらってください。";
+    return "Supabase の行ごとのアクセス制限（RLS）で止められています。ログインしている人が、使う人のリスト（app_members）に入っているか、管理する人に確かめてもらってください。2段階認証（認証アプリのコード）を済ませていないときも、このエラーになります（ページを開き直して、コードを入れてください）。";
   }
   if (/Invalid API key|No API key|JWT|apikey/i.test(text)) {
     return "supabase-config.js の Publishable key が正しいか確かめてください。";
@@ -3292,7 +3393,8 @@ function explainCloudError(error) {
 
 function cloudErrorText(error) {
   const advice = explainCloudError(error);
-  return `${error.message}${error.code && error.code !== "SETUP" && error.code !== "DUPLICATE" ? `（コード：${error.code}）` : ""}${advice ? `\n${advice}` : ""}`;
+  const ownCodes = ["SETUP", "DUPLICATE", "AAL", "EMPTY"];
+  return `${error.message}${error.code && !ownCodes.includes(error.code) ? `（コード：${error.code}）` : ""}${advice ? `\n${advice}` : ""}`;
 }
 
 // 画面の上の「保存の状態」と、送れなかったときの赤いお知らせを、今の状態に合わせる
@@ -3340,8 +3442,21 @@ function hideCloudLoading() {
   document.querySelector(".container").inert = false;
 }
 
+// 2段階認証（コード）まで済ませていないときのエラー
+const CLOUD_AAL_ERROR = { message: "ログインの確認が切れました。ログインし直してください。", code: "AAL" };
+
+// 今のログインが、コードまで済ませた状態（aal2）かを確かめる。違えば CLOUD_AAL_ERROR、確かめられなければそのエラー、よければ null
+// （aal2 でないと、データベースは読むと0行・更新や削除も0行で終わるため、そのまま読んだり保存したりしない）
+async function checkCloudAal2() {
+  const { data, error } = await isSupabaseAal2();
+  if (error) return error;
+  return data ? null : CLOUD_AAL_ERROR;
+}
+
 // Supabase からすべてのデータを読み、アプリの形にする。読めなかったら { error } を返す
 async function fetchCloudData() {
+  const aalError = await checkCloudAal2();
+  if (aalError) return { error: aalError };
   const tables = [...CLOUD_TABLES, { table: CLOUD_VARIETY_TABLE, order: ["variety"] }];
   const results = await Promise.all(tables.map(t => fetchAllSupabaseRows(t.table, t.order)));
   const failed = results.find(r => r.error);
@@ -3425,6 +3540,16 @@ async function loadFromCloud() {
   remindBackupOnce();
 }
 
+// 読んだデータが、すべての表で0行なら true
+function cloudDataLooksEmpty(d) {
+  return d.lists.every(list => !list.length) && d.savedVarieties.size === 0;
+}
+
+// 画面に、Supabase から読んだデータ（行）があれば true
+function screenHasCloudData() {
+  return [...CLOUD_TABLES.map(t => t.table), CLOUD_VARIETY_TABLE].some(table => cloudBaseline[table] && cloudBaseline[table].size > 0);
+}
+
 // まだ送っていない変更があれば true（このときは読み直さない。読み直すと、その変更が消えるため）
 function hasUnsentCloudChanges() {
   return cloudSaving || cloudSaveQueued || !!cloudSaveError;
@@ -3479,6 +3604,13 @@ async function refreshFromCloud(force = false) {
     showCloudStatus();
     return;
   }
+  // 補助の保険：画面にはデータがあるのに、すべての表が0行で返ってきたときは、画面を置きかえない
+  // （2段階認証を済ませていないログインでは、エラーではなく0行が返るため。本当に全部消した場合とは区別できない）
+  if (cloudDataLooksEmpty(d) && screenHasCloudData()) {
+    cloudRefreshError = { message: "Supabase からデータを読み込めませんでした（すべて0件で返ってきたため、画面は置きかえていません）。", code: "EMPTY" };
+    showCloudStatus();
+    return;
+  }
   const recovered = !!cloudRefreshError;
   cloudRefreshError = null;
   showCloudStatus();
@@ -3520,19 +3652,37 @@ window.addEventListener("beforeunload", e => {
 // ログアウトのために開き直すときは true（閉じる前の確認を出さないため）
 let cloudSigningOut = false;
 
-function setLoginMessage(text, isError) {
-  const el = document.getElementById("loginMessage");
+// ログイン画面の段階（password：メール・パスワード、code：認証アプリのコード、enroll：認証アプリの登録）と、
+// それぞれのフォーム・最初に入れる欄・お知らせの欄
+const LOGIN_STAGES = {
+  password: { form: "loginForm", focus: "loginEmail", message: "loginMessage" },
+  code: { form: "mfaCodeForm", focus: "mfaCode", message: "mfaCodeMessage" },
+  // 登録の段階は、見出しに移す（スマホでキーボードが開いて、QRコードとキーが隠れないように）
+  enroll: { form: "mfaEnrollForm", focus: "mfaEnrollTitle", message: "mfaEnrollMessage" }
+};
+
+// ログイン画面の、指定した段階だけを出す（ほかの画面は操作できないようにする）
+function showLoginStage(stage, message) {
+  document.getElementById("cloudLoading").hidden = true;
+  document.getElementById("loginScreen").hidden = false;
+  document.querySelector(".container").inert = true;
+  Object.keys(LOGIN_STAGES).forEach(key => {
+    document.getElementById(LOGIN_STAGES[key].form).hidden = key !== stage;
+  });
+  // 登録の段階から離れるときは、QRコードとキーを画面から消す
+  if (stage !== "enroll") clearEnrollSecret();
+  setStageMessage(stage, message || "", !!message);
+  document.getElementById(LOGIN_STAGES[stage].focus).focus();
+}
+
+function setStageMessage(stage, text, isError) {
+  const el = document.getElementById(LOGIN_STAGES[stage].message);
   el.textContent = text;
   el.classList.toggle("login-message-error", !!isError);
 }
 
-// ログイン画面を出す（ほかの画面は操作できないようにする）
-function showLoginScreen(message) {
-  document.getElementById("cloudLoading").hidden = true;
-  document.getElementById("loginScreen").hidden = false;
-  document.querySelector(".container").inert = true;
-  setLoginMessage(message || "", !!message);
-  document.getElementById("loginEmail").focus();
+function setLoginMessage(text, isError) {
+  setStageMessage("password", text, isError);
 }
 
 function hideLoginScreen() {
@@ -3570,8 +3720,13 @@ async function submitLogin(event) {
   afterSignIn(data.email);
 }
 
-// ログインできたら、使う人のリストに入っているかを確かめてから、データを読み込む
+// ログインした人のメールアドレス（コードの確認・登録のあとで、画面の上に出すため）
+let pendingLoginEmail = "";
+
+// ログインの直後（と、ページを開いたとき）に1回だけ呼ぶ。
+// 使う人のリストに入っているかを確かめ、2段階認証の状態で、データの読み込み・コードの入力・登録のどれに進むかを決める
 async function afterSignIn(email) {
+  pendingLoginEmail = email;
   showCloudLoading("使う人のリストを確かめています…", false);
   const { data, error } = await isSupabaseMember();
   if (error) {
@@ -3581,12 +3736,317 @@ async function afterSignIn(email) {
   if (!data) {
     // リストに入っていない人は、ログインを消してログイン画面に戻す
     await signOutSupabase();
-    showLoginScreen(`「${email}」は、使う人のリストに入っていないため、使えません。管理する人に、Supabase の app_members に追加してもらってください。`);
+    showLoginStage("password", `「${email}」は、使う人のリストに入っていないため、使えません。管理する人に、Supabase の app_members に追加してもらってください。`);
     return;
   }
-  document.getElementById("cloudUserEmail").textContent = email;
+  // データを読み込む前に、2段階認証の状態を確かめる
+  showCloudLoading("2段階認証の状態を確かめています…", false);
+  const mfa = await getMfaState();
+  if (mfa.error) {
+    // 確かめられなかったときは「登録がない」とはみなさず、登録の段階には進まない
+    showCloudLoading(`2段階認証の状態を確かめられませんでした。\n${cloudErrorText(mfa.error)}\n直したら「もう一度読み込む」を押してください。`, true);
+    return;
+  }
+  if (mfa.data.aal2) {
+    startSignedIn();
+  } else if (mfa.data.verifiedFactors.length) {
+    showCodeStage(mfa.data.verifiedFactors);
+  } else {
+    startEnroll("first");
+  }
+}
+
+// コードまで済ませたあと：画面の上にメールアドレスを出し、データを読み込む
+function startSignedIn() {
+  document.getElementById("cloudUserEmail").textContent = pendingLoginEmail;
   document.getElementById("cloudUser").hidden = false;
   loadFromCloud();
+}
+
+// ---------- 2段階認証（認証アプリのコード） ----------
+
+// コードの確認・登録・削除の処理中は true（ボタンの連打で2回走らないように）
+let mfaBusy = false;
+// 登録の途中の登録の番号と、登録の種類（first：初めての登録、add：ログイン設定からの追加）
+let enrollFactorId = "";
+let enrollMode = "first";
+
+// 入れられたコードを、半角の6桁の数字にする（全角の数字や、間の空白も受け付ける）。6桁にならなければ ""
+function normalizeTotpCode(text) {
+  const code = String(text || "")
+    .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[\s　-]/g, "");
+  return /^\d{6}$/.test(code) ? code : "";
+}
+
+// コードの確認のエラーを、分かりやすい文にする
+function mfaErrorText(error) {
+  const text = `${error.message} ${error.code}`;
+  if (/rate.?limit|too many/i.test(text)) return "何度も確かめたため、しばらく確認できません。少し時間をおいてから、もう一度ためしてください。";
+  if (/mfa_verification_failed|mfa_challenge_expired|invalid.*(code|totp)/i.test(text)) {
+    return "コードが違うか、期限が切れています。スマホの時刻が合っているか確かめてください。";
+  }
+  return `確かめられませんでした。\n${cloudErrorText(error)}`;
+}
+
+// コードを入れる段階を出す（登録が2つ以上あるときは、どの登録かを選べるようにする）
+function showCodeStage(factors) {
+  const select = document.getElementById("mfaFactorSelect");
+  select.replaceChildren(...factors.map(f => {
+    const option = document.createElement("option");
+    option.value = f.id;
+    option.textContent = f.friendly_name || "認証アプリ";
+    return option;
+  }));
+  document.getElementById("mfaFactorPicker").hidden = factors.length < 2;
+  document.getElementById("mfaCode").value = "";
+  showLoginStage("code", "");
+}
+
+async function submitMfaCode(event) {
+  event.preventDefault();
+  if (mfaBusy) return;
+  const input = document.getElementById("mfaCode");
+  const code = normalizeTotpCode(input.value);
+  if (!code) {
+    setStageMessage("code", "認証アプリに出ている6桁の数字を入れてください。", true);
+    return;
+  }
+  const button = document.getElementById("mfaCodeButton");
+  mfaBusy = true;
+  button.disabled = true;
+  setStageMessage("code", "確かめています…", false);
+  const { error } = await verifyTotp(document.getElementById("mfaFactorSelect").value, code);
+  mfaBusy = false;
+  button.disabled = false;
+  input.value = "";
+  if (error) {
+    setStageMessage("code", mfaErrorText(error), true);
+    input.focus();
+    return;
+  }
+  hideLoginScreen();
+  startSignedIn();
+}
+
+// 登録用の QR コードとキーを、画面から消す
+function clearEnrollSecret() {
+  document.getElementById("mfaQr").removeAttribute("src");
+  document.getElementById("mfaSecret").textContent = "";
+  document.getElementById("mfaEnrollCode").value = "";
+  enrollFactorId = "";
+}
+
+// 登録の名前（毎回ちがう名前にする。同じ名前の登録は作れないため）
+function newFactorName() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  return `認証アプリ ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// 登録を始めて、QR コードを出す。mode は first（初めての登録）か add（ログイン設定からの追加）
+async function startEnroll(mode) {
+  enrollMode = mode;
+  showCloudLoading("登録用のQRコードを用意しています…", false);
+  // 前に途中でやめた登録（確認が済んでいないもの）を先に消す。確認済みの登録は消さない
+  const cleaned = await cleanupUnverifiedFactors();
+  const enrolled = cleaned.error ? cleaned : await enrollTotp(newFactorName());
+  if (enrolled.error) {
+    const text = `登録用のQRコードを用意できませんでした。\n${cloudErrorText(enrolled.error)}`;
+    if (mode === "add") {
+      closeLoginOverlay();
+      notify(text, "error", 15000);
+    } else {
+      showCloudLoading(`${text}\n直したら「もう一度読み込む」を押してください。`, true);
+    }
+    return;
+  }
+  const adding = mode === "add";
+  document.getElementById("mfaEnrollTitle").textContent = adding ? "認証アプリの登録を追加" : "2段階認証の登録";
+  document.getElementById("mfaEnrollLead").hidden = adding;
+  document.getElementById("mfaEnrollLogout").hidden = adding;
+  document.getElementById("mfaEnrollCancel").hidden = !adding;
+  showLoginStage("enroll", "");
+  enrollFactorId = enrolled.data.id;
+  document.getElementById("mfaQr").src = enrolled.data.qrCode;
+  document.getElementById("mfaSecret").textContent = enrolled.data.secret;
+}
+
+async function submitMfaEnroll(event) {
+  event.preventDefault();
+  if (mfaBusy || !enrollFactorId) return;
+  const input = document.getElementById("mfaEnrollCode");
+  const code = normalizeTotpCode(input.value);
+  if (!code) {
+    setStageMessage("enroll", "認証アプリに出た6桁の数字を入れてください。", true);
+    return;
+  }
+  const button = document.getElementById("mfaEnrollButton");
+  mfaBusy = true;
+  button.disabled = true;
+  setStageMessage("enroll", "確かめています…", false);
+  const { error } = await verifyTotp(enrollFactorId, code);
+  mfaBusy = false;
+  button.disabled = false;
+  input.value = "";
+  if (error) {
+    setStageMessage("enroll", mfaErrorText(error), true);
+    input.focus();
+    return;
+  }
+  clearEnrollSecret();
+  if (enrollMode === "add") {
+    closeLoginOverlay();
+    notify("認証アプリの登録を追加しました。", "success");
+    renderMfaPanel();
+    return;
+  }
+  hideLoginScreen();
+  startSignedIn();
+}
+
+// ログイン設定から開いた登録の画面を閉じて、元の画面に戻る
+function closeLoginOverlay() {
+  clearEnrollSecret();
+  hideLoginScreen();
+  hideCloudLoading();
+}
+
+// 登録の追加をやめる（途中の登録は、確認が済んでいないので消す）
+async function cancelAddMfaFactor() {
+  if (mfaBusy) return;
+  closeLoginOverlay();
+  // 消し終わるまでは、次の「登録を追加」を受け付けない（新しく作った登録まで消さないため）
+  mfaBusy = true;
+  setMfaPanelBusy(true);
+  const { error } = await cleanupUnverifiedFactors();
+  mfaBusy = false;
+  setMfaPanelBusy(false);
+  renderMfaPanel();
+  if (error) notify(`途中の登録を消せませんでした（次に登録するときに消します）。\n${cloudErrorText(error)}`, "warn", 10000);
+}
+
+// ---------- ログイン設定（登録の一覧・追加・削除） ----------
+
+function toggleMfaPanel() {
+  const panel = document.getElementById("mfaPanel");
+  panel.hidden = !panel.hidden;
+  document.getElementById("mfaPanelButton").setAttribute("aria-expanded", String(!panel.hidden));
+  if (!panel.hidden) renderMfaPanel();
+}
+
+function setMfaPanelNote(text, warn) {
+  const note = document.getElementById("mfaPanelNote");
+  note.textContent = text;
+  note.classList.toggle("mfa-panel-note-warn", !!warn);
+}
+
+function formatFactorDate(value) {
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? "" : d.toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+// 一覧を読むたびに増やす番号（あとから頼んだ一覧の返事が先に届いたとき、古い一覧で上書きしないため）
+let mfaPanelRenderCount = 0;
+
+// 登録済みの端末（確認済みの登録）を一覧にする
+async function renderMfaPanel() {
+  const count = ++mfaPanelRenderCount;
+  const list = document.getElementById("mfaFactorList");
+  list.replaceChildren();
+  setMfaPanelNote("読み込んでいます…", false);
+  const { data, error } = await listMfaFactors();
+  if (count !== mfaPanelRenderCount) return;
+  if (error) {
+    setMfaPanelNote(`登録の一覧を読み込めませんでした。\n${cloudErrorText(error)}`, true);
+    return;
+  }
+  const verified = data.verified;
+  const onlyOne = verified.length <= 1;
+  list.replaceChildren(...verified.map(f => {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "mfa-factor-name";
+    name.textContent = f.friendly_name || "認証アプリ";
+    const date = document.createElement("span");
+    date.className = "mfa-factor-date";
+    date.textContent = `登録日：${formatFactorDate(f.created_at)}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "delete-button";
+    button.textContent = "削除";
+    button.dataset.action = "removeMfaFactorById";
+    button.dataset.arg = f.id;
+    // 最後の1つは消せない（消すと、データを読めなくなるため）
+    // 削除などの処理中に一覧を作り直したときも、押せないようにする
+    button.disabled = onlyOne || mfaBusy;
+    li.append(name, date, button);
+    return li;
+  }));
+  if (!verified.length) {
+    setMfaPanelNote("認証アプリの登録が0件です。このままでは、パスワードを知っている人が先に登録できてしまいます。すぐに「登録を追加」で登録してください。", true);
+  } else if (onlyOne) {
+    setMfaPanelNote("スマホをなくすとログインできなくなります。「登録を追加」で、新しいQRコードを2台で読み取っておいてください。それができないときは、管理する人に頼み方を確かめておいてください。\n最後の登録は消せません。登録のやり直しが必要なときは、管理する人に頼んでください。", true);
+  } else {
+    setMfaPanelNote("どの登録のコードでもログインできます。使わなくなった端末の登録は、削除してください（新しい登録を追加してから、古い登録を消します）。", false);
+  }
+}
+
+function startAddMfaFactor() {
+  if (mfaBusy) return;
+  startEnroll("add");
+}
+
+// 削除の処理中は、一覧の削除ボタンと「登録を追加」を押せないようにする
+function setMfaPanelBusy(busy) {
+  document.querySelectorAll("#mfaFactorList button, #mfaAddButton").forEach(b => b.disabled = busy);
+}
+
+async function removeMfaFactorById(factorId) {
+  if (mfaBusy) return;
+  // 一覧を読み直す前から処理中にする（2つの「削除」を続けて押して、両方とも消えないように）
+  mfaBusy = true;
+  setMfaPanelBusy(true);
+  try {
+    await removeMfaFactorChecked(factorId);
+  } finally {
+    mfaBusy = false;
+    setMfaPanelBusy(false);
+    renderMfaPanel();
+  }
+}
+
+async function removeMfaFactorChecked(factorId) {
+  // 消す直前に、もう一度数える（ほかのタブで消したあとかもしれないため）
+  const { data, error } = await listMfaFactors();
+  if (error) {
+    notify(`登録の一覧を読み込めませんでした。\n${cloudErrorText(error)}`, "error", 10000);
+    return;
+  }
+  const target = data.verified.find(f => f.id === factorId);
+  if (!target) return;
+  if (data.verified.length <= 1) {
+    notify("最後の登録は消せません。登録のやり直しが必要なときは、管理する人に頼んでください。", "warn", 10000);
+    return;
+  }
+  if (!confirm(`「${target.friendly_name || "認証アプリ"}」の登録を削除しますか？\nこの登録（同じQRコードを読み取ったすべての端末）のコードでは、ログインできなくなります。`)) return;
+  const removed = await removeMfaFactor(factorId);
+  if (removed.error) {
+    notify(`登録を削除できませんでした。\n${cloudErrorText(removed.error)}`, "error", 10000);
+    return;
+  }
+  // ほかのタブや端末でも同時に削除して、確認済みの登録が0になっていないかを確かめる
+  // （0のままだと、次のログインで、パスワードを知っている人なら誰でも登録できてしまうため）
+  const after = await listMfaFactors();
+  if (after.error) {
+    notify("登録は削除しましたが、残りの登録を確かめられませんでした。ログイン設定で、登録が残っているか確かめてください。", "warn", 15000);
+    return;
+  }
+  if (after.data.verified.length === 0) {
+    alert("認証アプリの登録が0件になりました（ほかのタブや端末でも削除したためです）。\nこのままでは、パスワードを知っている人が先に登録できてしまいます。すぐに「登録を追加」で、登録し直してください。");
+    return;
+  }
+  notify("登録を削除しました。", "success");
 }
 
 // ページを開いたとき：ログインしていればデータを読み込み、していなければログイン画面を出す
@@ -3602,7 +4062,7 @@ async function startCloud() {
     return;
   }
   if (!data) {
-    showLoginScreen("");
+    showLoginStage("password", "");
     return;
   }
   afterSignIn(data.email);
@@ -4103,6 +4563,8 @@ document.querySelectorAll(".view-tab, .sub-tab").forEach(e => e.onclick = () => 
 });
 refreshAll();
 document.getElementById("loginForm").addEventListener("submit", submitLogin);
+document.getElementById("mfaCodeForm").addEventListener("submit", submitMfaCode);
+document.getElementById("mfaEnrollForm").addEventListener("submit", submitMfaEnroll);
 
 // ボタンを押したときの処理。index.html には処理を直接書かず（onclick="…" を使わず）、data-action の名前でここから呼ぶ
 // （ページの中に書かれたスクリプトを動かさない決まり（Content-Security-Policy）を使えるようにして、
@@ -4111,7 +4573,8 @@ const PAGE_ACTIONS = {
   addReservation, addShipment, cancelCustomerEdit, cancelEdit, cancelShipmentEdit,
   exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
   logout, printCurrentList, retryCloud, saveCustomer, showMoreRows,
-  openReservationForm, openShipmentForm, quickStatusFilter, showBackupPanel, toggleFab, toggleFilters,
+  toggleMfaPanel, startAddMfaFactor, cancelAddMfaFactor, removeMfaFactorById,
+  openReservationForm, openShipmentForm, quickStatusFilter, showBackupPanel, showShippedShortage, toggleFab, toggleFilters,
   setStockMode: mode => setStockMode(mode),
   showView: id => onTabClick(id),
   openImportFile: () => document.getElementById("importFile").click(),

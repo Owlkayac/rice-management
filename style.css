@@ -154,6 +154,38 @@ h2 {
   margin: 8px 0 0;
 }
 
+/* 状態が「出荷済み」なのに出荷の登録が足りない予約（ホームの1行と、予約一覧の目印） */
+.home-shortage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 4px solid #c0392b;
+  border-radius: 6px;
+  background: #fdecea;
+  color: #8a1f12;
+  font-weight: bold;
+}
+
+.home-shortage[hidden] {
+  display: none;
+}
+
+.home-shortage .tool-button {
+  min-height: 44px;
+}
+
+.status-shortage {
+  display: block;
+  margin-top: 4px;
+  color: #b00020;
+  font-size: 13px;
+  font-weight: bold;
+}
+
 .home-backup-remind {
   display: flex;
   flex-wrap: wrap;
@@ -1382,6 +1414,16 @@ small {
     justify-content: flex-end;
   }
 
+  /* 状態の欄に「出荷の登録が足りません」が付くときは、選択欄の下に折り返す */
+  .card-table td.status-cell {
+    flex-wrap: wrap;
+  }
+
+  .card-table td.status-cell .status-shortage {
+    flex: 0 0 100%;
+    text-align: right;
+  }
+
   .card-table td.action-td {
     display: block;
     flex: 1 1 0;
@@ -1545,6 +1587,137 @@ small {
 
 .login-message-error {
   color: #b00020;
+}
+
+/* ログイン画面は、登録の説明が長いので、はみ出したら縦に動かせるようにする
+   （上下の余白を auto にして、短いときは真ん中、長いときは上から出す） */
+#loginScreen {
+  align-items: flex-start;
+  overflow-y: auto;
+}
+
+#loginScreen .login-box {
+  margin: auto 0;
+}
+
+.login-box[hidden] {
+  display: none;
+}
+
+.login-box .login-help {
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.login-box .login-steps {
+  margin: 8px 0 0;
+  padding-left: 1.4em;
+  font-size: 14px;
+}
+
+.login-box .login-steps li {
+  margin-bottom: 4px;
+}
+
+/* 登録の画面を出したときに見出しへ移す入力位置の枠線は出さない（入力欄ではないため） */
+#mfaEnrollTitle:focus {
+  outline: none;
+}
+
+.login-box select {
+  width: 100%;
+}
+
+/* 登録用のQRコード（白い余白を付けて、読み取りやすくする） */
+.mfa-qr {
+  display: block;
+  width: 200px;
+  max-width: 100%;
+  height: auto;
+  margin: 12px auto 0;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #ddd;
+}
+
+.mfa-qr:not([src]) {
+  display: none;
+}
+
+/* 手で入れるキー（長いので、どこでも折り返す） */
+.mfa-secret {
+  margin: 4px 0 0;
+  font-family: monospace;
+  font-size: 15px;
+  letter-spacing: 0.05em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* ログイン設定のパネル */
+.mfa-panel {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid #ccd6cc;
+  border-radius: 10px;
+  background: #f7faf7;
+}
+
+.mfa-panel[hidden] {
+  display: none;
+}
+
+.mfa-panel h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.mfa-panel-note {
+  margin: 0 0 8px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.mfa-panel-note-warn {
+  color: #8a4b00;
+}
+
+.mfa-factor-list {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.mfa-factor-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #e3e8e3;
+  overflow-wrap: anywhere;
+}
+
+.mfa-factor-list .mfa-factor-name {
+  flex: 1 1 12em;
+  font-weight: bold;
+}
+
+.mfa-factor-list .mfa-factor-date {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.mfa-factor-list button,
+.mfa-panel-buttons button {
+  min-height: 44px;
+}
+
+.mfa-panel-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 @media print {

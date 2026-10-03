@@ -241,3 +241,122 @@ function watchSupabaseSignOut(onSignedOut) {
     if (event === "SIGNED_OUT") onSignedOut();
   });
 }
+
+// ---------- 2段階認証（認証アプリの6桁のコード。MFA の TOTP） ----------
+// 認証の強さ：パスワードだけ＝aal1、パスワード＋コード＝aal2。
+// 登録用の secret（手で入れるキー）は、画面に出す以外に使わない（保存しない・console に出さない）。
+
+// 今のログインが aal2（コードまで済ませた）かどうか。data に true / false
+// （端末にあるログインの証明書（JWT）を見るだけで、ふだんは通信しない。期限が切れていれば延長のために通信する）
+async function isSupabaseAal2() {
+  const where = "2段階認証の確認";
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const { data, error } = await supabaseClient.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (error) return supabaseFailure(where, error);
+    return { data: !!data && data.currentLevel === "aal2", error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// 登録の一覧（Supabase に問い合わせる）。data に { verified, unverified }（どちらも認証アプリの登録だけ）
+// （listFactors の totp には確認済みしか入らないため、all から status で分ける）
+async function listMfaFactors() {
+  const where = "2段階認証の登録の確認";
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const { data, error } = await supabaseClient.auth.mfa.listFactors();
+    if (error) return supabaseFailure(where, error);
+    const all = ((data && data.all) || []).filter(f => f.factor_type === "totp");
+    return {
+      data: {
+        verified: all.filter(f => f.status === "verified"),
+        unverified: all.filter(f => f.status === "unverified")
+      },
+      error: null
+    };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// ログインの直後に、どの段階に進むかを決めるための状態。data に { aal2, verifiedFactors }
+// どちらかを確かめられなかったときは error を返す（「登録がない」とはみなさない）
+async function getMfaState() {
+  const level = await isSupabaseAal2();
+  if (level.error) return level;
+  const factors = await listMfaFactors();
+  if (factors.error) return factors;
+  return { data: { aal2: level.data, verifiedFactors: factors.data.verified }, error: null };
+}
+
+// 確認が済んでいない登録（status が unverified のもの）だけを消す。確認済みの登録は、消さない
+async function cleanupUnverifiedFactors() {
+  const where = "確認が済んでいない登録の削除";
+  if (!supabaseClient) return setupFailure(where);
+  const factors = await listMfaFactors();
+  if (factors.error) return factors;
+  try {
+    for (const f of factors.data.unverified) {
+      if (f.status !== "unverified") continue;
+      const { error } = await supabaseClient.auth.mfa.unenroll({ factorId: f.id });
+      if (error) return supabaseFailure(where, error);
+    }
+    return { data: factors.data.unverified.length, error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// 認証アプリの登録を始める。data に { id, qrCode（<img> の src に入れる data: の URL）, secret（手で入れるキー） }
+async function enrollTotp(friendlyName) {
+  const where = "2段階認証の登録";
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const { data, error } = await supabaseClient.auth.mfa.enroll({ factorType: "totp", friendlyName });
+    if (error) return supabaseFailure(where, error);
+    if (!data || !data.id || !data.totp || !data.totp.qr_code || !data.totp.secret) {
+      return supabaseFailure(where, { message: "登録用のQRコードを受け取れませんでした。" });
+    }
+    return { data: { id: data.id, qrCode: toSvgDataUrl(data.totp.qr_code), secret: data.totp.secret }, error: null };
+  } catch (err) {
+    // ここでは err をそのまま console に出さない（念のため、secret を含むかもしれないものを出さない）
+    return supabaseFailure(where, { message: String((err && err.message) || err), code: (err && err.code) || "" });
+  }
+}
+
+// supabase-js は「data:image/svg+xml;utf-8,<svg…」の形（SVG をそのまま付けたもの）で返す。
+// SVG の中の # などで途中が切れないよう、SVG の部分を URL の形に直して付け直す
+function toSvgDataUrl(qrCode) {
+  const comma = qrCode.indexOf(",");
+  const body = qrCode.startsWith("data:") && comma >= 0 ? qrCode.slice(comma + 1) : qrCode;
+  if (!body.trim().startsWith("<")) return qrCode;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(body)}`;
+}
+
+// 6桁のコードを確かめる（登録の確認にも、ログインのときのコードの確認にも使う）。成功すると aal2 になる
+async function verifyTotp(factorId, code) {
+  const where = "2段階認証のコードの確認";
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const { error } = await supabaseClient.auth.mfa.challengeAndVerify({ factorId, code });
+    if (error) return supabaseFailure(where, error);
+    return { data: true, error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}
+
+// 登録を1つ消す
+async function removeMfaFactor(factorId) {
+  const where = "2段階認証の登録の削除";
+  if (!supabaseClient) return setupFailure(where);
+  try {
+    const { error } = await supabaseClient.auth.mfa.unenroll({ factorId });
+    if (error) return supabaseFailure(where, error);
+    return { data: true, error: null };
+  } catch (err) {
+    return supabaseFailure(where, err);
+  }
+}

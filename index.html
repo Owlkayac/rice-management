@@ -5,20 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- 読み込んでよいもの・通信してよい先を、この中に書いたものだけに決める（Content-Security-Policy）。
          万一、細工した文字が画面に入っても、スクリプトとして動かず、ほかのサイトへデータを送れないようにするため。
-         別の Supabase につなぐときは、connect-src の URL も supabase-config.js の Project URL に変えること -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://aacfbxcbuesrfolmxltc.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
+         別の Supabase につなぐときは、connect-src の URL も supabase-config.js の Project URL に変えること。
+         img-src の data: は、2段階認証の登録用のQRコード（Supabase から SVG の画像として届く）を出すため（<img> の SVG はスクリプトとして動かない） -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://aacfbxcbuesrfolmxltc.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
     <!-- ほかのサイトへ移るときに、このページのアドレスを伝えない -->
     <meta name="referrer" content="no-referrer">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=32">
+    <link rel="stylesheet" href="style.css?v=35">
   </head>
   <body>
     <div class="container">
       <h1>🌾 米予約管理</h1>
       <div id="cloudUser" class="cloud-user" hidden>
         <span>ログイン中：<span id="cloudUserEmail"></span></span>
+        <button type="button" class="cancel-button" data-action="toggleMfaPanel" aria-expanded="false" aria-controls="mfaPanel" id="mfaPanelButton">ログイン設定</button>
         <button type="button" class="cancel-button" data-action="logout">ログアウト</button>
       </div>
+      <!-- ログイン設定：2段階認証（認証アプリ）の登録の一覧・追加・削除 -->
+      <section id="mfaPanel" class="mfa-panel no-print" hidden>
+        <h2>ログイン設定（認証アプリの登録）</h2>
+        <p id="mfaPanelNote" class="mfa-panel-note"></p>
+        <ul id="mfaFactorList" class="mfa-factor-list"></ul>
+        <div class="mfa-panel-buttons">
+          <button type="button" id="mfaAddButton" data-action="startAddMfaFactor">登録を追加</button>
+          <button type="button" class="cancel-button" data-action="toggleMfaPanel">閉じる</button>
+        </div>
+      </section>
       <p id="cloudStatus" class="cloud-status" role="status" aria-live="polite"></p>
       <div id="cloudError" class="cloud-error" role="alert" hidden>
         <p id="cloudErrorText"></p>
@@ -41,12 +53,12 @@
           <button type="button" class="tool-button" data-action="showBackupPanel">バックアップへ</button>
         </p>
         <section class="home-section">
-          <h3>先に発送する人<small>入金済み・未出荷</small></h3>
-          <p class="home-pending">準備中です（入金の記録ができるようになったら、ここに出します）</p>
-        </section>
-        <section class="home-section">
           <h3>未出荷の顧客<small>未出荷が多い順</small></h3>
           <p id="homeUnshippedSummary" class="unshipped-summary"></p>
+          <p id="homeShortageNote" class="home-shortage no-print" hidden>
+            <span id="homeShortageText"></span>
+            <button type="button" class="tool-button" data-action="showShippedShortage">予約一覧で見る</button>
+          </p>
           <div class="table-wrapper">
             <table class="card-table">
               <thead>
@@ -65,12 +77,16 @@
           </p>
         </section>
         <section class="home-section">
-          <h3>入金待ち<small>出荷済み・未入金</small></h3>
+          <h3>品種ごとの残り在庫<small id="homeStockBasis"></small></h3>
+          <div id="homeStock" class="home-stock"></div>
+        </section>
+        <section class="home-section">
+          <h3>先に発送する人<small>入金済み・未出荷</small></h3>
           <p class="home-pending">準備中です（入金の記録ができるようになったら、ここに出します）</p>
         </section>
         <section class="home-section">
-          <h3>品種ごとの残り在庫<small id="homeStockBasis"></small></h3>
-          <div id="homeStock" class="home-stock"></div>
+          <h3>入金待ち<small>出荷済み・未入金</small></h3>
+          <p class="home-pending">準備中です（入金の記録ができるようになったら、ここに出します）</p>
         </section>
       </main>
 
@@ -417,7 +433,7 @@
           <h2>未出荷の顧客</h2>
           <details class="help-box">
             <summary><span class="help-mark" aria-hidden="true">？</span>未出荷の数え方</summary>
-            <p>顧客ごと・品種ごとに、予約から、登録した出荷を引いた残りです。予約の状態を「出荷済み」にしただけでは減りません。「集計」の未出荷量は全体を品種ごとに差し引くので、この合計と違うことがあります。</p>
+            <p>予約から、登録した出荷を引いた残りです。予約の状態を変えても減りません。</p>
           </details>
           <p id="unshippedCustomerSummary" class="unshipped-summary"></p>
           <div class="list-tools">
@@ -522,6 +538,40 @@
         <p id="loginMessage" class="login-message" role="alert"></p>
         <button type="submit" id="loginButton">ログイン</button>
       </form>
+      <!-- 2段階認証：認証アプリの6桁のコードを入れる -->
+      <form id="mfaCodeForm" class="cloud-loading-box login-box" novalidate hidden>
+        <h2>認証アプリのコード</h2>
+        <p class="login-help">スマホの認証アプリに出ている6桁の数字を入れてください（30秒ごとに変わります）。</p>
+        <div id="mfaFactorPicker" hidden>
+          <label for="mfaFactorSelect">どの登録のコードか</label>
+          <select id="mfaFactorSelect"></select>
+        </div>
+        <label for="mfaCode">6桁のコード</label>
+        <input type="text" id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="8" spellcheck="false">
+        <p id="mfaCodeMessage" class="login-message" role="alert"></p>
+        <button type="submit" id="mfaCodeButton">確認する</button>
+        <button type="button" class="cancel-button" data-action="logout">別のアカウントでログインする</button>
+      </form>
+      <!-- 2段階認証：認証アプリを登録する（初めてのとき・登録を追加するとき） -->
+      <form id="mfaEnrollForm" class="cloud-loading-box login-box" novalidate hidden>
+        <h2 id="mfaEnrollTitle" tabindex="-1">2段階認証の登録</h2>
+        <p id="mfaEnrollLead" class="login-help">パスワードが漏れても、ほかの人がデータを見られないよう、ログインのときに、スマホの認証アプリの6桁のコードも入れるようにします。</p>
+        <ol class="login-steps">
+          <li>スマホに認証アプリ（Google Authenticator、Microsoft Authenticator、1Password など）を入れます。</li>
+          <li>認証アプリで、下のQRコードを読み取ります。<strong>スマホを2台使う人は、2台で同じQRコードを読み取ってください</strong>（どちらのスマホのコードでもログインできるようになります）。</li>
+          <li>認証アプリに出た6桁の数字を、下に入れて「登録する」を押します。</li>
+        </ol>
+        <img id="mfaQr" class="mfa-qr" alt="認証アプリで読み取る登録用のQRコード" width="200" height="200">
+        <p class="login-help">QRコードを読み取れないときは、認証アプリで「キーを入力」を選び、次のキーを入れます。</p>
+        <p id="mfaSecret" class="mfa-secret"></p>
+        <label for="mfaEnrollCode">認証アプリに出た6桁のコード</label>
+        <input type="text" id="mfaEnrollCode" inputmode="numeric" autocomplete="one-time-code" maxlength="8" spellcheck="false">
+        <p class="login-help">登録の途中でページを開き直したり、別のタブでこの画面を開いたりすると、このQRコードは使えなくなります。そのときは、新しく出たQRコードを読み取り直してください。</p>
+        <p id="mfaEnrollMessage" class="login-message" role="alert"></p>
+        <button type="submit" id="mfaEnrollButton">登録する</button>
+        <button type="button" id="mfaEnrollLogout" class="cancel-button" data-action="logout">別のアカウントでログインする</button>
+        <button type="button" id="mfaEnrollCancel" class="cancel-button" data-action="cancelAddMfaFactor" hidden>やめる</button>
+      </form>
     </div>
     <!-- 読み込む順番：supabase-js → 接続先の設定 → 接続用の関数 → アプリ本体 -->
     <!-- supabase-js は、外のサイト（CDN）からではなく、このリポジトリに置いたもの（npm の @supabase/supabase-js 2.117.2 の dist/umd/supabase.js と同じ中身）を使う。
@@ -529,7 +579,7 @@
          置いたファイルの sha384 は Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok（版を上げるときに、npm のものと同じかをこれで確かめる） -->
     <script src="vendor/supabase-js-2.117.2.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="supabase-client.js?v=26"></script>
-    <script src="app.js?v=34"></script>
+    <script src="supabase-client.js?v=27"></script>
+    <script src="app.js?v=37"></script>
   </body>
 </html>

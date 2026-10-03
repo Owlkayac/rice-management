@@ -1085,6 +1085,13 @@ small {
   cursor: pointer;
 }
 
+/* 自動ロック中は、データの画面そのものを隠す（画面でも印刷でも見えないように） */
+body.screen-locked .container,
+body.screen-locked .doc-print,
+body.screen-locked .toast-area {
+  display: none !important;
+}
+
 /* ボタン付きの知らせの、閉じるボタン（右上） */
 .toast-has-action {
   position: relative;

@@ -2673,11 +2673,13 @@ const UNDO_KINDS = {
 // 消すのは1行だけ（予約・出荷が付いた顧客や、出荷が紐づいた予約は消せない）なので、戻すときは同じ番号の行を足し直せばよい
 function offerUndoDelete(kind, item, index, text) {
   const { label } = UNDO_KINDS[kind];
-  notify(`${label}を削除しました（${text}）`, "info", UNDO_DELETE_MS, { label: "元に戻す", run: () => undoDelete(kind, item, index, text) });
+  // 消したときに持ち主の顧客がいたか（もともと「未登録」の予約・出荷は、顧客がいなくても戻せるように）
+  const hadOwner = kind !== "customer" && !!customerFor(item);
+  notify(`${label}を削除しました（${text}）`, "info", UNDO_DELETE_MS, { label: "元に戻す", run: () => undoDelete(kind, item, index, text, hadOwner) });
 }
 
 // 削除した行を元に戻す。戻せないときは理由を知らせて false を返す
-function undoDelete(kind, item, index, text) {
+function undoDelete(kind, item, index, text, hadOwner) {
   if (!ensureFresh()) {
     if (cloudSaveError) notify(`保存できたあとで、この知らせが消えていたら、${UNDO_KINDS[kind].label}（${text}）を手で入れ直してください。`, "warn", 12000);
     return false;
@@ -2691,7 +2693,7 @@ function undoDelete(kind, item, index, text) {
   }
   // 持ち主の顧客や、紐づけていた予約が、その後に消されていたら戻さない（つながり先の無いデータを作らないため）
   // 名前だけでつながる古いデータは、同じ名前の顧客が残っているかで確かめる
-  if (kind !== "customer" && (item.customerId ? !findCustomer(item.customerId) : !customerFor(item))) {
+  if (hadOwner && !customerFor(item)) {
     notify(item.customerId ? `この${label}の顧客が、その後に削除されたため、元に戻せません。` : `この${label}と同じ名前の顧客が見つからないため、元に戻せません。`, "warn", 8000);
     return true;
   }
@@ -3657,6 +3659,8 @@ function showCloudLoading(text, canRetry) {
 }
 
 function hideCloudLoading() {
+  // 自動ロック中は外さない（コードを入れずに、ほかの処理の終わりでおおいが外れないように）
+  if (screenLocked) return;
   document.getElementById("cloudLoading").hidden = true;
   document.querySelector(".container").inert = false;
 }
@@ -3757,6 +3761,8 @@ async function loadFromCloud() {
   showCloudStatus();
   notifySkippedRows(d.skipped);
   remindBackupOnce();
+  // 読み込みの間に、ほかのタブがロックしていたら、すぐにロックする
+  if (hasLockMark()) autoLockIfIdle();
 }
 
 // 読んだデータが、すべての表で0行なら true
@@ -3787,7 +3793,7 @@ function userIsEditing() {
 // 30秒ごとの読み直し（force が false）は、編集や入力の途中なら後回しにする。
 // 操作の前の読み直し（force が true）は、古いデータで保存しないよう、編集中でも読み直す
 async function refreshFromCloud(force = false) {
-  // 自動ロックで画面をおおっている間は読み直さない（見ている人がいないうえ、ログインを延ばし続けないため）
+  // 自動ロックで画面をおおっている間は読み直さない（見ている人がいないため。なお、ログインの延長は supabase-js が裏で続ける）
   if (!cloudReady || hasUnsentCloudChanges() || screenLocked) return;
   if (cloudRefreshing) {
     // 30秒ごとの読み直しの途中に、操作の前の読み直しを頼まれたら、終わったときに「もう一度操作してください」を出す
@@ -4042,7 +4048,8 @@ async function submitMfaCode(event) {
   mfaBusy = true;
   button.disabled = true;
   setStageMessage("code", "確かめています…", false);
-  const { error } = await verifyTotp(document.getElementById("mfaFactorSelect").value, code);
+  // 返事が来ないまま止まって、ボタンが押せなくならないよう、時間切れにする
+  const { error } = await withTimeout(verifyTotp(document.getElementById("mfaFactorSelect").value, code), LOCK_NETWORK_TIMEOUT_MS);
   mfaBusy = false;
   button.disabled = false;
   input.value = "";
@@ -4056,7 +4063,7 @@ async function submitMfaCode(event) {
   if (lockResume) {
     const resume = lockResume;
     lockResume = null;
-    screenLocked = false;
+    setScreenLocked(false);
     setLockMark(false);
     lastActivityAt = Date.now();
     writeStoredActivity(lastActivityAt);
@@ -4088,6 +4095,9 @@ async function startEnroll(mode) {
   // 前に途中でやめた登録（確認が済んでいないもの）を先に消す。確認済みの登録は消さない
   const cleaned = await cleanupUnverifiedFactors();
   const enrolled = cleaned.error ? cleaned : await enrollTotp(newFactorName());
+  // 待っている間に自動ロックされたら、登録の画面を出さない（ロック中の端末で、ほかの人が自分の認証アプリを登録できないように。
+  // 確認が済んでいないこの登録は、次の登録のときに消える）
+  if (screenLocked && mode === "add") return;
   if (enrolled.error) {
     const text = `登録用のQRコードを用意できませんでした。\n${cloudErrorText(enrolled.error)}`;
     if (mode === "add") {
@@ -4144,6 +4154,8 @@ async function submitMfaEnroll(event) {
 
 // ログイン設定から開いた登録の画面を閉じて、元の画面に戻る
 function closeLoginOverlay() {
+  // 自動ロック中は、ロックのコードの欄を隠さない
+  if (screenLocked) return;
   clearEnrollSecret();
   hideLoginScreen();
   hideCloudLoading();
@@ -4315,7 +4327,7 @@ async function startCloud() {
 }
 
 async function logout() {
-  if (hasUnsentCloudChanges() && !confirm("Supabase に保存できていない変更があります。ログアウトすると、その変更は消えます。ログアウトしますか？")) return;
+  if ((hasUnsentCloudChanges() || otherTabHasUnsent()) && !confirm("Supabase に保存できていない変更があります（ほかのタブの分も含みます）。ログアウトすると、その変更は消えます。ログアウトしますか？")) return;
   cloudSigningOut = true;
   await signOutSupabase();
   // 画面のデータを残さないよう、ページを開き直す（ログイン画面が出る）
@@ -4377,7 +4389,9 @@ function idleMs() {
 // 残すのは「タブの番号 → 時刻」だけ（顧客のデータは入れない）
 const UNSENT_TABS_STORAGE_KEY = "unsentTabs";
 // 閉じ方によっては印が残るので、これより古い印は数えない（保存できていない間は、1分ごとに時刻を新しくする）
-const UNSENT_TAB_STALE_MS = 30 * 60 * 1000;
+// （iPhone では裏のタブのタイマーが止まるので、短いと、まだ保存できていないタブの印を古いとみなしてしまう。
+//   閉じたタブの印は pagehide で消すので、ここは、閉じ方がおかしかったときの掃除のためだけ）
+const UNSENT_TAB_STALE_MS = 3 * 24 * 60 * 60 * 1000;
 const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let publishedUnsent = false;
 
@@ -4460,22 +4474,35 @@ function editingAnything() {
   return editingReservationId !== null || editingShipmentId !== null || editingCustomerId !== null;
 }
 
+// ロック中かを決める。ロック中は、データの画面そのものを隠す（おおいだけだと、印刷や透けで見えてしまうため。
+// 画面の中のデータは残るので、保存できていない変更は消えない）
+function setScreenLocked(on) {
+  screenLocked = on;
+  document.body.classList.toggle("screen-locked", on);
+}
+
 // 画面をおおって、データを見えなくする（知らせにも名前が出るので消す）
 function coverScreen() {
-  screenLocked = true;
+  setScreenLocked(true);
   showCloudLoading("しばらく操作がなかったため、画面を隠しています…", false);
   document.getElementById("toastArea").replaceChildren();
 }
 
 // ログアウトせずに画面をおおったまま、認証アプリのコードで再開できるようにする
 async function showLockCodeStage(onResume, message) {
-  screenLocked = true;
+  setScreenLocked(true);
   lockResume = onResume;
   setLockMark(true);
-  const { data, error } = await listMfaFactors();
-  // 通信できなくても、ログインしたときに読んだ登録があれば、それでコードの欄を出す
-  // （電波が悪くて保存できていないときに、開き直すしかなくなり、その変更が消えないように）
-  const factors = !error && data.verified.length ? data.verified : knownVerifiedFactors;
+  // ログインしたときに読んだ登録があれば、問い合わせずにそれでコードの欄を出す
+  // （電波が悪いときに、返事を待ったまま止まったり、開き直すしかなくなって、保存できていない変更が消えたりしないように。
+  //   コードが正しいかは、Supabase 側で確かめる）
+  let factors = knownVerifiedFactors;
+  let error = null;
+  if (!factors.length) {
+    const result = await withTimeout(listMfaFactors(), LOCK_NETWORK_TIMEOUT_MS);
+    error = result.error;
+    factors = !error && result.data.verified.length ? result.data.verified : [];
+  }
   if (!factors.length) {
     // ロックの印は残すので、開き直しても、もう一度コードを求める。開き直さずに「もう一度試す」でもやり直せる
     lockRetry = () => showLockCodeStage(onResume, message);
@@ -4527,6 +4554,17 @@ async function autoLockIfIdle() {
     return;
   }
   await lockBySignOut(resumeInPlace, wasEditing);
+}
+
+// 通信の返事が来ないときに、待つのをやめる時間
+const LOCK_NETWORK_TIMEOUT_MS = 15 * 1000;
+
+// promise が決めた時間までに終わらなければ、時間切れのエラーを返す（{ data, error } の形の処理に使う）
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve({ data: null, error: { message: "返事がありませんでした（時間切れ）。", code: "TIMEOUT" } }), ms))
+  ]);
 }
 
 // ロックのコードの欄を出せなかったときの「もう一度試す」
@@ -4735,8 +4773,8 @@ function redrawLists() {
   withCustomerLookup(() => Object.values(LIST_DISPLAYS).forEach(f => f()));
 }
 window.addEventListener("beforeprint", () => {
-  // 納品書・請求書の印刷では一覧は紙に出ないので、作り直さない
-  if (document.body.classList.contains("printing-doc")) return;
+  // 納品書・請求書の印刷では一覧は紙に出ないので、作り直さない。自動ロック中も作り直さない（紙にも出さない）
+  if (document.body.classList.contains("printing-doc") || screenLocked) return;
   printingAllRows = true;
   redrawLists();
 });

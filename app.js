@@ -149,15 +149,29 @@ function storeItem(k, text) {
   localStorage.setItem(k, text);
 }
 
-function notify(message, type = "info", duration = 5000) {
+// action を渡すと、知らせの中にボタンを付ける（{ label：ボタンの文字, run：押したときの処理 }）
+function notify(message, type = "info", duration = 5000, action = null) {
   const area = document.getElementById("toastArea");
   if (!area) return;
-  // 多すぎるときは古いものから消す。「保存しました」は、ほかの大事な知らせより先に消す
-  while (area.children.length >= 4) (area.querySelector(".toast-success") || area.firstChild).remove();
+  // 多すぎるときは古いものから消す。「保存しました」を先に、「元に戻す」などのボタン付きの知らせを最後に消す
+  while (area.children.length >= 4) (area.querySelector(".toast-success") || area.querySelector(".toast:not(.toast-has-action)") || area.firstChild).remove();
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = message;
-  el.onclick = () => el.remove();
+  // ボタン付きの知らせは、文字に指が触れただけでは消さない（ボタンを押す前に消えて、戻せなくならないように）
+  if (!action) el.onclick = () => el.remove();
+  if (action) {
+    el.classList.add("toast-has-action");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toast-action";
+    button.textContent = action.label;
+    button.onclick = () => {
+      // 処理が止まったとき（false を返したとき）は、知らせを残して、もう一度押せるようにする
+      if (action.run() !== false) el.remove();
+    };
+    el.appendChild(button);
+  }
   area.appendChild(el);
   setTimeout(() => el.remove(), duration);
 }
@@ -1433,10 +1447,11 @@ function deleteReservation(i) {
     if (index === -1) return;
     // 念のための再確認（今は、確認中に別のタブで変わった場合は confirmThen が先に止める）
     if (blockDeleteIfLinked(targetId)) return;
-    reservations.splice(index, 1);
+    const [removed] = reservations.splice(index, 1);
     if (targetId === editingReservationId) cancelEdit();
     save("reservations", reservations);
     refreshAll();
+    offerUndoDelete("reservation", removed, index, `${customerName(removed)}・${varietyLabel(removed.variety)}・${monthLabel(removed.month)}・${formatKg(removed.kg)}`);
   });
 }
 
@@ -2061,10 +2076,11 @@ function deleteShipment(i) {
   confirmThen("この出荷データを削除しますか？", () => {
     const index = shipments.findIndex(x => x.id === targetId);
     if (index === -1) return;
-    shipments.splice(index, 1);
+    const [removed] = shipments.splice(index, 1);
     if (targetId === editingShipmentId) cancelShipmentEdit();
     save(SHIPMENTS_STORAGE_KEY, shipments);
     refreshAll();
+    offerUndoDelete("shipment", removed, index, `${customerName(removed)}・${varietyLabel(removed.variety)}・${removed.date || "日付なし"}・${formatKg(removed.kg)}`);
   });
 }
 
@@ -2553,10 +2569,71 @@ function deleteCustomer(id) {
     return;
   }
   confirmThen(`${c.name}を削除しますか？`, () => {
-    customers = customers.filter(x => x.customerId !== id);
+    const index = customers.findIndex(x => x.customerId === id);
+    if (index === -1) return;
+    const [removed] = customers.splice(index, 1);
     save(CUSTOMERS_STORAGE_KEY, customers);
     refreshAll();
+    offerUndoDelete("customer", removed, index, removed.name || "名前なし");
   });
+}
+
+// ---------- 削除を元に戻す ----------
+
+// 「元に戻す」を押せる時間（ミリ秒）
+const UNDO_DELETE_MS = 10000;
+
+// 種類ごとの、データの一覧・保存の名前・番号の取り出し方
+const UNDO_KINDS = {
+  reservation: { label: "予約", key: "reservations", list: () => reservations, idOf: x => x.id },
+  shipment: { label: "出荷", key: SHIPMENTS_STORAGE_KEY, list: () => shipments, idOf: x => x.id },
+  customer: { label: "顧客", key: CUSTOMERS_STORAGE_KEY, list: () => customers, idOf: x => x.customerId }
+};
+
+// 削除したあとに、しばらく「元に戻す」ボタン付きの知らせを出す。
+// 消すのは1行だけ（予約・出荷が付いた顧客や、出荷が紐づいた予約は消せない）なので、戻すときは同じ番号の行を足し直せばよい
+function offerUndoDelete(kind, item, index, text) {
+  const { label } = UNDO_KINDS[kind];
+  notify(`${label}を削除しました（${text}）`, "info", UNDO_DELETE_MS, { label: "元に戻す", run: () => undoDelete(kind, item, index, text) });
+}
+
+// 削除した行を元に戻す。戻せないときは理由を知らせて false を返す
+function undoDelete(kind, item, index, text) {
+  if (!ensureFresh()) {
+    if (cloudSaveError) notify(`保存できたあとで、この知らせが消えていたら、${UNDO_KINDS[kind].label}（${text}）を手で入れ直してください。`, "warn", 12000);
+    return false;
+  }
+  const { label, key, list, idOf } = UNDO_KINDS[kind];
+  const rows = list();
+  // 別の画面で、同じ番号の行がもう戻されているとき
+  if (rows.some(x => idOf(x) === idOf(item))) {
+    notify(`この${label}は、今も一覧にあります（すでに戻っているか、削除が保存されなかったため）。`, "info", 8000);
+    return true;
+  }
+  // 持ち主の顧客や、紐づけていた予約が、その後に消されていたら戻さない（つながり先の無いデータを作らないため）
+  if (kind !== "customer" && item.customerId && !findCustomer(item.customerId)) {
+    notify(`この${label}の顧客が、その後に削除されたため、元に戻せません。`, "warn", 8000);
+    return true;
+  }
+  if (kind === "shipment" && item.reservationId) {
+    const linked = reservations.find(r => r.id === item.reservationId);
+    if (!linked) {
+      notify("この出荷を紐づけていた予約が、その後に削除されたため、元に戻せません。", "warn", 8000);
+      return true;
+    }
+    // 予約の顧客や品種が、その後に変わっていたら戻さない（別の人の予約や、違う品種の予約に出荷が紐づかないように）
+    if (customerKey(linked) !== customerKey(item) || !sameVariety(linked.variety, item.variety)) {
+      notify("この出荷を紐づけていた予約の顧客か品種が、その後に変わったため、元に戻せません。必要なら、出荷を入れ直してください。", "warn", 10000);
+      return true;
+    }
+  }
+  // 元の位置に戻す（読み直すと、登録した日時の順に並ぶ）
+  rows.splice(Math.min(index, rows.length), 0, item);
+  save(key, rows);
+  refreshAll();
+  noticeAfterSave(`${label}を元に戻しました（${text}）`);
+  if (kind === "reservation") notifyIfReservationHidden(item);
+  return true;
 }
 
 function editCustomer(id) {
@@ -4323,6 +4400,32 @@ function timestampForFilename() {
 // バックアップ（「データを書き出す」）をすすめる間隔（日）
 const BACKUP_REMIND_DAYS = 7;
 
+// これだけの日数がたったら、赤で強く知らせる
+const BACKUP_URGENT_DAYS = 14;
+// 「この端末でバックアップを取る」の設定（この端末のブラウザにだけ保存する。true / false。未設定なら null）
+const BACKUP_DUTY_STORAGE_KEY = "backupDuty";
+
+// この端末でバックアップを取るか。未設定のときは、一度でも書き出した端末なら取る（前からの動きのまま）
+function isBackupDevice() {
+  const duty = read(BACKUP_DUTY_STORAGE_KEY, null);
+  if (typeof duty === "boolean") return duty;
+  return read(LAST_BACKUP_STORAGE_KEY, null) !== null;
+}
+
+function setBackupDevice(on) {
+  save(BACKUP_DUTY_STORAGE_KEY, !!on);
+  showBackupStatus();
+}
+
+// バックアップをすすめる文（すすめる時期でなければ null）。urgent：赤で強く知らせるか
+function backupReminder() {
+  if (!isBackupDevice()) return null;
+  const days = daysSinceBackup();
+  if (days === null) return { short: "この端末では、まだ一度もバックアップしていません。", urgent: true };
+  if (days < BACKUP_REMIND_DAYS) return null;
+  return { short: `前回のバックアップから${days}日たっています。`, urgent: days >= BACKUP_URGENT_DAYS };
+}
+
 // この端末で最後に書き出してから何日たったか（書き出したことが無ければ null）
 function daysSinceBackup() {
   const last = read(LAST_BACKUP_STORAGE_KEY, null);
@@ -4338,23 +4441,25 @@ function showBackupStatus() {
   const lastDate = last ? new Date(last) : null;
   const lastText = lastDate && !Number.isNaN(lastDate.getTime()) ? `最終バックアップ（この端末）：${lastDate.toLocaleString("ja-JP")}` : "この端末では、まだバックアップしていません";
   el.textContent = `現在のデータ：予約${reservations.length}件 / 出荷${shipments.length}件 / 顧客${customers.length}件　${lastText}`;
-  // バックアップを取る端末（一度でも書き出した端末）でだけ、決めた日数がたったら書き出しをすすめる
-  // （バックアップは、決めた1台の端末で取る決まりにしたため。ほかの端末で毎回知らせないように）
-  const days = daysSinceBackup();
-  const due = days !== null && days >= BACKUP_REMIND_DAYS;
+  // バックアップを取る端末でだけ、書き出しをすすめる（ほかの端末で毎回知らせないように）。
+  // まだ一度も書き出していない端末でも、「この端末でバックアップを取る」を入れていれば知らせる
+  document.getElementById("backupDevice").checked = isBackupDevice();
+  const due = backupReminder();
   const remind = document.getElementById("backupRemind");
   remind.hidden = !due;
-  remind.textContent = due ? `前回のバックアップから${days}日たっています。「データを書き出す」を押して、ファイルを保存してください。` : "";
-  // ホームにも1行で知らせる
-  document.getElementById("homeBackupRemind").hidden = !due;
-  document.getElementById("homeBackupRemindText").textContent = due ? `前回のバックアップから${days}日たっています。` : "";
+  remind.textContent = due ? `${due.short}「データを書き出す」を押して、ファイルを保存してください。` : "";
+  // ホームにも1行で知らせる（長くたっているときは赤）
+  const home = document.getElementById("homeBackupRemind");
+  home.hidden = !due;
+  [remind, home].forEach(el => el.classList.toggle("backup-remind-urgent", !!due && due.urgent));
+  document.getElementById("homeBackupRemindText").textContent = due ? due.short : "";
 }
 
 // 開いたときに、書き出しの時期が来ていれば一度だけ知らせる（バックアップを取る端末でだけ）
 function remindBackupOnce() {
-  const days = daysSinceBackup();
-  if (days === null || days < BACKUP_REMIND_DAYS) return;
-  notify(`前回のバックアップから${days}日たっています。「在庫・設定」の「データを書き出す」で、ファイルに保存してください。`, "warn", 12000);
+  const due = backupReminder();
+  if (!due) return;
+  notify(`${due.short}「在庫・設定」の「データを書き出す」で、ファイルに保存してください。`, due.urgent ? "error" : "warn", 12000);
 }
 
 // 今のデータからバックアップを作る（ファイルへの書き出しに使う）
@@ -4638,4 +4743,5 @@ document.addEventListener("click", e => {
   PAGE_ACTIONS[el.dataset.action](el.dataset.arg);
 });
 document.getElementById("importFile").addEventListener("change", importBackup);
+document.getElementById("backupDevice").addEventListener("change", e => setBackupDevice(e.target.checked));
 startCloud();

@@ -1069,6 +1069,25 @@ small {
   background: #b00020;
 }
 
+/* 知らせの中のボタン（「元に戻す」など） */
+.toast-action {
+  display: block;
+  margin-top: 8px;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 2px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
 .backup-panel {
   margin-top: 32px;
   padding: 20px;
@@ -1127,6 +1146,28 @@ small {
   background: #fff6dc;
   color: #6b4b00;
   font-weight: bold;
+}
+
+.backup-remind.backup-remind-urgent {
+  border-left-color: #b00020;
+  background: #fdecee;
+  color: #8a0019;
+}
+
+.backup-device {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  font-weight: bold;
+}
+
+.backup-device input {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  margin: 2px 0 0;
+  padding: 0;
 }
 
 .backup-remind[hidden] {

@@ -493,6 +493,8 @@
           <h2>データのバックアップ</h2>
           <p id="backupStatus" class="backup-status"></p>
           <p id="backupRemind" class="backup-remind" hidden></p>
+          <label class="backup-device"><input type="checkbox" id="backupDevice"> この端末でバックアップを取る（入れると、7日ごとに書き出しをすすめます。まだ一度も書き出していなくても知らせます）</label>
+          <p class="section-help">この設定と「最終バックアップ」は、端末（ブラウザ）ごとに覚えます。iPhone では、Safari とホーム画面から開いたアプリが、別の端末として扱われることがあります。</p>
           <div class="backup-actions">
             <button type="button" id="exportBackupButton" data-action="exportBackup">データを書き出す</button>
             <button type="button" id="importBackupButton" class="cancel-button" data-action="openImportFile">データを読み込む</button>

@@ -1361,7 +1361,8 @@ function showMoreRows(key) {
   listLimits[key] += LIST_PAGE_SIZE;
   LIST_DISPLAYS[key]();
   // ボタンが作り直されるので、続けて押せるように、新しい「もっと見る」ボタンに選択を移す
-  document.querySelector(`#${key}More button`)?.focus();
+  // （画面は動かさない。動かすと、新しく出た100行を飛ばして一番下へ移ってしまうため）
+  document.querySelector(`#${key}More button`)?.focus({ preventScroll: true });
 }
 
 // 検索・絞り込み・並び順を変えたら、また最初の LIST_PAGE_SIZE 件から出す
@@ -3591,8 +3592,6 @@ document.getElementById("shipmentSort").addEventListener("change", e => {
   resetListLimit(id.startsWith("customer") ? "customers" : "reservations");
   refreshAll();
 }));
-document.getElementById("filterVariety").onchange = refreshAll;
-document.getElementById("filterMonth").onchange = refreshAll;
 document.getElementById("customerSelect").onchange = e => {
   document.getElementById("name").value = customers.find(c => c.customerId === e.target.value)?.name || "";
 };

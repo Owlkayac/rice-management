@@ -10,7 +10,7 @@
     <!-- ほかのサイトへ移るときに、このページのアドレスを伝えない -->
     <meta name="referrer" content="no-referrer">
     <title>米予約管理</title>
-    <link rel="stylesheet" href="style.css?v=30">
+    <link rel="stylesheet" href="style.css?v=31">
   </head>
   <body>
     <div class="container">
@@ -86,7 +86,7 @@
           <select id="filterStatus"></select>
           <label for="reservationSort">並び順</label>
           <select id="reservationSort">
-            <option value="recent">登録順</option>
+            <option value="recent">新しい順（登録）</option>
             <option value="month">月順</option>
             <option value="variety">品種順</option>
             <option value="name">顧客名順</option>
@@ -114,6 +114,7 @@
             <tbody id="reservationList"></tbody>
           </table>
         </div>
+        <div id="reservationsMore" class="list-more no-print" hidden></div>
         <h2>月別合計</h2>
         <div id="summary"></div>
       </main>
@@ -289,7 +290,7 @@
         <div class="filters">
           <label for="shipmentSort">並び順</label>
           <select id="shipmentSort">
-            <option value="recent">登録順</option>
+            <option value="recent">新しい順（登録）</option>
             <option value="dateDesc">出荷日が新しい順</option>
             <option value="dateAsc">出荷日が古い順</option>
             <option value="name">顧客名順</option>
@@ -314,6 +315,7 @@
             <tbody id="shipmentList"></tbody>
           </table>
         </div>
+        <div id="shipmentsMore" class="list-more no-print" hidden></div>
         <h2>出荷集計</h2>
         <div class="table-wrapper">
           <table class="shipment-summary-table">
@@ -394,7 +396,7 @@
           <label for="customerSort">並び順</label>
           <select id="customerSort">
             <option value="name">顧客名</option>
-            <option value="recent">登録順</option>
+            <option value="recent">新しい順（登録）</option>
             <option value="reservations">予約量順</option>
           </select>
         </div>
@@ -421,6 +423,7 @@
             <tbody id="customerList"></tbody>
           </table>
         </div>
+        <div id="customersMore" class="list-more no-print" hidden></div>
         <section id="customerDetail" hidden></section>
       </main>
       <section class="backup-panel" id="backupPanel">
@@ -463,6 +466,6 @@
     <script src="vendor/supabase-js-2.117.2.js"></script>
     <script src="supabase-config.js"></script>
     <script src="supabase-client.js?v=26"></script>
-    <script src="app.js?v=30"></script>
+    <script src="app.js?v=31"></script>
   </body>
 </html>

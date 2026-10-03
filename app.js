@@ -37,6 +37,14 @@ const SHIPMENT_SORTS = ["recent", "dateDesc", "dateAsc", "name"];
 const CHANNELS = ["ウェブフォーム", "Instagram", "LINE", "電話・対面", "その他"];
 const STATUSES = { received: "受付済み", preparing: "出荷準備中", shipped: "出荷済み" };
 const STATUS_KEYS = ["received", "preparing", "shipped"];
+// 予約一覧の「状態」の絞り込みで、出荷済みを隠す選び方（はじめはこれを選んでおく）
+const STATUS_FILTER_ACTIVE = "active";
+// 一覧（予約・出荷・顧客）に一度に出す行の数。多いときは「もっと見る」で、この数ずつ増やす
+// （何千件も一度に表を作ると、スマホで表示や操作が遅くなるため。検索・絞り込み・CSV・合計は全件が対象）
+const LIST_PAGE_SIZE = 100;
+const listLimits = { reservations: LIST_PAGE_SIZE, shipments: LIST_PAGE_SIZE, customers: LIST_PAGE_SIZE };
+// 印刷している間は、区切らずに全部の行を出す
+let printingAllRows = false;
 const PRICES_STORAGE_KEY = "varietyPrices";
 // 品種ごとの歩留まり率（%）。在庫量は精米する前の量なので、精米で減る分（米粉になる分など）を引いて「出荷できる量」を出す
 const YIELDS_STORAGE_KEY = "varietyYields";
@@ -442,6 +450,13 @@ function monthNumber(m) {
   return parseInt(m, 10) || 99;
 }
 
+// 日本語の並べ方で比べる（localeCompare(…, "ja") と同じ結果）。
+// 並べ方の決まりを1回だけ作って使い回す（localeCompare に "ja" を渡すと、比べるたびに作り直すので、件数が多いと遅いため）
+const jaCollator = new Intl.Collator("ja");
+function jaCompare(a, b) {
+  return jaCollator.compare(a, b);
+}
+
 function customerSortKey(item) {
   const c = customerFor(item);
   return String(c?.furigana || customerName(item));
@@ -453,17 +468,19 @@ function reservationComparator(mode) {
   const byMonth = (a, b) => monthNumber(a.r.month) - monthNumber(b.r.month);
   if (mode === "month") return (a, b) => byMonth(a, b) || byVariety(a, b) || byIndex(a, b);
   if (mode === "variety") return (a, b) => byVariety(a, b) || byMonth(a, b) || byIndex(a, b);
-  if (mode === "name") return (a, b) => customerSortKey(a.r).localeCompare(customerSortKey(b.r), "ja") || byMonth(a, b) || byIndex(a, b);
+  if (mode === "name") return (a, b) => jaCompare(customerSortKey(a.r), customerSortKey(b.r)) || byMonth(a, b) || byIndex(a, b);
   if (mode === "kg") return (a, b) => (Number(b.r.kg) || 0) - (Number(a.r.kg) || 0) || byIndex(a, b);
-  return byIndex;
+  // 「新しい順（登録）」：あとから登録したものを上に（一覧を区切って出すので、新しい予約が下に隠れないように）
+  return (a, b) => b.i - a.i;
 }
 
 function shipmentComparator(mode) {
   const byIndex = (a, b) => a.i - b.i;
   if (mode === "dateDesc") return (a, b) => String(b.s.date).localeCompare(String(a.s.date)) || b.i - a.i;
   if (mode === "dateAsc") return (a, b) => String(a.s.date).localeCompare(String(b.s.date)) || byIndex(a, b);
-  if (mode === "name") return (a, b) => customerSortKey(a.s).localeCompare(customerSortKey(b.s), "ja") || String(a.s.date).localeCompare(String(b.s.date)) || byIndex(a, b);
-  return byIndex;
+  if (mode === "name") return (a, b) => jaCompare(customerSortKey(a.s), customerSortKey(b.s)) || String(a.s.date).localeCompare(String(b.s.date)) || byIndex(a, b);
+  // 「新しい順（登録）」：あとから登録したものを上に
+  return (a, b) => b.i - a.i;
 }
 
 function loadPricesFrom(x) {
@@ -524,11 +541,74 @@ function fillOptions() {
   document.getElementById("filterMonth").innerHTML = '<option value="">すべて</option>' + months.map(m => `<option>${m}</option>`).join("");
   document.getElementById("channel").innerHTML = '<option value="">未選択</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("");
   document.getElementById("filterChannel").innerHTML = '<option value="">すべて</option>' + CHANNELS.map(c => `<option>${c}</option>`).join("") + '<option value="__none">未設定</option>';
-  document.getElementById("filterStatus").innerHTML = '<option value="">すべて</option>' + STATUS_KEYS.map(k => `<option value="${k}">${STATUSES[k]}</option>`).join("");
+  document.getElementById("filterStatus").innerHTML = `<option value="">すべて</option><option value="${STATUS_FILTER_ACTIVE}">出荷済み以外</option>` + STATUS_KEYS.map(k => `<option value="${k}">${STATUSES[k]}</option>`).join("");
+  // はじめは出荷済みを隠す（毎日見るのは、まだ出荷していない予約がほとんどのため）
+  document.getElementById("filterStatus").value = STATUS_FILTER_ACTIVE;
   refreshCustomerSelects();
 }
 
+// 顧客を id・名前ですぐ探すための表。find と同じく、同じ id・同じ名前が複数あれば最初の顧客にする
+function buildCustomerLookup() {
+  const byId = new Map();
+  const byName = new Map();
+  customers.forEach(c => {
+    if (!byId.has(c.customerId)) byId.set(c.customerId, c);
+    if (!byName.has(c.name)) byName.set(c.name, c);
+  });
+  // source・count：作ったときの customers（入れかわったり件数が変わったりしたら、この表は使わない）
+  // displayNames・byNameKey・groups：描き直しの間だけ使い回すもの（必要になったときに作る。呼んだ側は書きかえないこと）
+  return { byId, byName, source: customers, count: customers.length, displayNames: null, byNameKey: null, groups: null };
+}
+
+// 今使える、顧客を探すための表（無いとき、または customers が作ったときと変わっていたら null）
+function currentCustomerLookup() {
+  if (!customerLookup) return null;
+  if (customerLookup.source !== customers || customerLookup.count !== customers.length) {
+    console.error("顧客を探すための表が古くなっています（描き直しの途中で customers が変わりました）。表を使わずに探します。");
+    return null;
+  }
+  return customerLookup;
+}
+
+// 画面を描き直している間だけ使う、顧客を探すための表（無いときは null）
+// （customerFor を予約・出荷の1件ごとに呼ぶと、そのたびに全部の顧客を順に探すので、件数が多いととても遅くなるため）
+let customerLookup = null;
+
+// fn を、顧客を探すための表を作ってから動かし、終わったら表を捨てる。
+// fn の中では customers を変えないこと（変えると、表が古いままになる）。画面を描き直す処理だけに使う
+function withCustomerLookup(fn) {
+  if (currentCustomerLookup()) return fn();
+  const outer = customerLookup;
+  customerLookup = buildCustomerLookup();
+  try {
+    return fn();
+  } finally {
+    // 外側にも表があれば戻す（ただし古くなっていれば、currentCustomerLookup が使わない）
+    customerLookup = outer;
+  }
+}
+
+// 空白や全角・半角の違いをなくすと、名前が name と同じになる顧客の一覧
+function customersWithSameNameKey(name) {
+  const key = compareKey(name);
+  const lookup = currentCustomerLookup();
+  if (!lookup) return customers.filter(c => compareKey(c.name) === key);
+  // 描き直しの間は、名前の形ごとの表を1回だけ作って使い回す
+  if (!lookup.byNameKey) {
+    lookup.byNameKey = new Map();
+    customers.forEach(c => {
+      const k = compareKey(c.name);
+      if (!lookup.byNameKey.has(k)) lookup.byNameKey.set(k, []);
+      lookup.byNameKey.get(k).push(c);
+    });
+  }
+  return lookup.byNameKey.get(key) || [];
+}
+
+// 予約・出荷の持ち主の顧客。customerId に中身があれば id で、無ければ名前で探す（id で見つからなくても、名前では探さない）
 function customerFor(item) {
+  const lookup = currentCustomerLookup();
+  if (lookup) return item.customerId ? lookup.byId.get(item.customerId) : lookup.byName.get(item.name);
   return item.customerId ? customers.find(c => c.customerId === item.customerId) : customers.find(c => c.name === item.name);
 }
 
@@ -673,7 +753,7 @@ function confirmNewCustomerThen(item, action) {
     confirmThen(sameNameConfirmText(same[0]), action);
     return;
   }
-  const similar = customers.filter(c => compareKey(c.name) === compareKey(name));
+  const similar = customersWithSameNameKey(name);
   if (!similar.length) {
     action();
     return;
@@ -692,6 +772,16 @@ function notifyNewCustomer(c) {
 // （メモはお店側だけで見る内容のことがあるので、お客さんの前で開く予約・出荷の欄には出さない）
 // それでも見分けられない人には「同じ名前のN人目」（顧客の並び順）を添えて、必ず見分けられるようにする
 function customerDisplayNames() {
+  // 描き直しの間は、1回作ったものを使い回す（顧客の数が多いと、作るのに時間がかかるため）
+  const lookup = currentCustomerLookup();
+  if (lookup) {
+    if (!lookup.displayNames) lookup.displayNames = buildCustomerDisplayNames();
+    return lookup.displayNames;
+  }
+  return buildCustomerDisplayNames();
+}
+
+function buildCustomerDisplayNames() {
   const head = t => {
     const chars = Array.from(String(t || "").trim());
     return chars.length > 10 ? `${chars.slice(0, 10).join("")}…` : chars.join("");
@@ -728,17 +818,22 @@ function customerDisplayNames() {
   return names;
 }
 
+// refreshCustomerSelects で、前に入れた選択肢の HTML（同じなら作り直さないため）
+let lastCustomerOptions = null;
+
 // 顧客の選択肢を作り直す。選んでいた顧客の名前が変わっていたら名前欄も今の名前にそろえ、
 // 選んでいた顧客が消えていたら名前欄も空にする（名前欄と選択の食い違いを残さないため）
 function refreshCustomerSelects() {
   const placeholder = "新しい顧客（名前欄に入力）";
   const names = customerDisplayNames();
   const opts = `<option value="">${placeholder}</option>` + customers.map(c => `<option value="${esc(c.customerId)}">${esc(names.get(c.customerId).label)}</option>`).join("");
+  // 選択肢が前と同じなら作り直さない（顧客が多いと、作り直すのに時間がかかるため）
+  const changed = opts !== lastCustomerOptions;
   [["customerSelect", "name"], ["shipmentCustomerSelect", "shipmentName"]].forEach(([id, nameId]) => {
     const e = document.getElementById(id);
     const nameInput = document.getElementById(nameId);
     const old = e.value;
-    e.innerHTML = opts;
+    if (changed) e.innerHTML = opts;
     const c = findCustomer(old);
     if (c) {
       e.value = old;
@@ -747,6 +842,8 @@ function refreshCustomerSelects() {
       nameInput.value = "";
     }
   });
+  // 2つの欄に入れ終わってから覚える（途中で止まったときに、入れていない欄を「入れ済み」としないため）
+  lastCustomerOptions = opts;
   showAllPickedCustomers();
 }
 
@@ -782,19 +879,21 @@ function idTime(id) {
 // 最近予約・出荷をした顧客（予約・出荷を登録した時刻の新しい順。直した時刻は数えない。
 // 番号の無かった古いデータは、番号を付けた時刻で数えるので、実際より新しく見えることがある）
 function recentCustomers(limit) {
-  const items = [...reservations, ...shipments]
-    .map(x => ({ time: idTime(x.id), customer: customerFor(x) }))
-    .filter(x => x.customer)
-    .sort((a, b) => b.time - a.time);
-  const seen = new Set();
-  const list = [];
-  for (const { customer } of items) {
-    if (seen.has(customer.customerId)) continue;
-    seen.add(customer.customerId);
-    list.push(customer);
-    if (list.length >= limit) break;
-  }
-  return list;
+  return withCustomerLookup(() => {
+    const items = [...reservations, ...shipments]
+      .map(x => ({ time: idTime(x.id), customer: customerFor(x) }))
+      .filter(x => x.customer)
+      .sort((a, b) => b.time - a.time);
+    const seen = new Set();
+    const list = [];
+    for (const { customer } of items) {
+      if (seen.has(customer.customerId)) continue;
+      seen.add(customer.customerId);
+      list.push(customer);
+      if (list.length >= limit) break;
+    }
+    return list;
+  });
 }
 
 // 入れた文字に合う顧客。名前・ふりがなの一部、または電話番号の一部で探す。
@@ -813,7 +912,7 @@ function matchCustomers(query) {
     if (rank >= 0) scored.push({ c, rank });
   });
   const sortKey = c => String(c.furigana || c.name || "");
-  scored.sort((a, b) => a.rank - b.rank || sortKey(a.c).localeCompare(sortKey(b.c), "ja"));
+  scored.sort((a, b) => a.rank - b.rank || jaCompare(sortKey(a.c), sortKey(b.c)));
   return scored.map(x => x.c);
 }
 
@@ -1182,6 +1281,8 @@ function commitReservation(r) {
     r.id = uid("reservation");
     r.status = "received";
     reservations.push(r);
+    // 並べ直すときは、顧客を探すための表を使う（名前順のとき、表が無いと件数が多いととても遅いため）
+    revealListRow("reservations", withCustomerLookup(() => getVisibleReservations().findIndex(x => x.r === r)));
   } else {
     const i = reservations.findIndex(x => x.id === editingReservationId);
     r.id = editingReservationId;
@@ -1325,20 +1426,94 @@ function getShippedTotals() {
   return totals(shipments);
 }
 
+// 一覧に出す行を、listLimits の数までにする（印刷のときは全部）
+function limitRows(list, key) {
+  return printingAllRows ? list : list.slice(0, listLimits[key]);
+}
+
+// 一覧の下に、何件中何件を出しているかと「もっと見る」ボタンを出す。note は、ほかに知らせたいこと（無ければ空）
+function showListMore(key, shown, total, note) {
+  const el = document.getElementById(`${key}More`);
+  const rest = total - shown;
+  const lines = [];
+  if (rest > 0) lines.push(`<p>${total}件のうち、${shown}件を表示しています。</p><button type="button" class="tool-button" data-action="showMoreRows" data-arg="${key}">もっと見る（あと${Math.min(rest, LIST_PAGE_SIZE)}件）</button>`);
+  if (note) lines.push(`<p>${esc(note)}</p>`);
+  el.innerHTML = lines.join("");
+  el.hidden = !lines.length;
+}
+
+const LIST_DISPLAYS = { reservations: () => displayReservations(), shipments: () => displayShipments(), customers: () => displayCustomers() };
+
+function showMoreRows(key) {
+  if (!Object.prototype.hasOwnProperty.call(listLimits, key)) return;
+  listLimits[key] += LIST_PAGE_SIZE;
+  withCustomerLookup(LIST_DISPLAYS[key]);
+  // ボタンが作り直されるので、続けて押せるように、新しい「もっと見る」ボタンに選択を移す
+  // （画面は動かさない。動かすと、新しく出た100行を飛ばして一番下へ移ってしまうため）
+  document.querySelector(`#${key}More button`)?.focus({ preventScroll: true });
+}
+
+// 検索・絞り込み・並び順を変えたら、また最初の LIST_PAGE_SIZE 件から出す
+function resetListLimit(key) {
+  listLimits[key] = LIST_PAGE_SIZE;
+}
+
 function getVisibleReservations() {
+  const fs = document.getElementById("filterStatus").value;
+  const sortMode = document.getElementById("reservationSort").value;
+  return reservations.map((r, i) => ({ r, i })).filter(({ r }) => reservationMatchesFilters(r) && reservationMatchesStatus(r, fs)).sort(reservationComparator(sortMode));
+}
+
+// 予約一覧の検索・品種・月・受付経路の条件に合うか（「状態」は見ない）
+function reservationMatchesFilters(r) {
   const q = document.getElementById("searchName").value.trim();
   const fv = document.getElementById("filterVariety").value;
   const fm = document.getElementById("filterMonth").value;
   const fc = document.getElementById("filterChannel").value;
-  const fs = document.getElementById("filterStatus").value;
-  const sortMode = document.getElementById("reservationSort").value;
-  return reservations.map((r, i) => ({ r, i })).filter(({ r }) => !(q && !customerName(r).includes(q) && !(r.name || "").includes(q) || fv && r.variety !== fv || fm && r.month !== fm || fc && channelOf(r) !== (fc === "__none" ? "" : fc) || fs && statusOf(r) !== fs)).sort(reservationComparator(sortMode));
+  // 名前：顧客名か、予約に書いた名前に、検索の文字が入っているか
+  if (q && !customerName(r).includes(q) && !(r.name || "").includes(q)) return false;
+  if (fv && r.variety !== fv) return false;
+  if (fm && r.month !== fm) return false;
+  // 受付経路：「未設定」（__none）は、経路が空の予約
+  if (fc && channelOf(r) !== (fc === "__none" ? "" : fc)) return false;
+  return true;
+}
+
+// 予約一覧の「状態」の条件に合うか（fs が空なら、すべて合う。「出荷済み以外」なら、出荷済みでないものが合う）
+function reservationMatchesStatus(r, fs) {
+  if (!fs) return true;
+  if (fs === STATUS_FILTER_ACTIVE) return statusOf(r) !== "shipped";
+  return statusOf(r) === fs;
+}
+
+// 「出荷済み以外」を選んでいるときに、ほかの条件には合うが、出荷済みなので隠している予約の件数（選んでいなければ 0）
+function hiddenShippedCount() {
+  if (document.getElementById("filterStatus").value !== STATUS_FILTER_ACTIVE) return 0;
+  return reservations.filter(r => statusOf(r) === "shipped" && reservationMatchesFilters(r)).length;
+}
+
+// 予約を「出荷済み」にしたとき、「出荷済み以外」の表示で一覧から消えるので、消えた理由を知らせる
+function notifyShippedHidden() {
+  if (document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE) {
+    notify("出荷済みにしました。今は「出荷済み以外」を表示しているので、一覧からは隠れます（上の「状態」で「すべて」か「出荷済み」を選ぶと見られます）。", "info", 8000);
+  }
+}
+
+// 登録したばかりの行が、区切った一覧の外（101件目より後ろ）に入ったら、見えるところまで表示を増やす
+// （登録できたかを一覧で確かめられるようにして、二重に登録しないため）。index は、表示する順で何番目か（無ければ -1）
+function revealListRow(key, index) {
+  if (index < 0 || index < listLimits[key]) return;
+  listLimits[key] = Math.ceil((index + 1) / LIST_PAGE_SIZE) * LIST_PAGE_SIZE;
 }
 
 function displayReservations() {
   const body = document.getElementById("reservationList");
   body.innerHTML = "";
-  getVisibleReservations().forEach(({ r, i }) => {
+  const visible = getVisibleReservations();
+  const shown = limitRows(visible, "reservations");
+  const hiddenShipped = hiddenShippedCount();
+  showListMore("reservations", shown.length, visible.length, hiddenShipped ? `出荷済みの予約${hiddenShipped}件は隠しています（上の「状態」で「すべて」か「出荷済み」を選ぶと見られます）。` : "");
+  shown.forEach(({ r, i }) => {
     const tr = document.createElement("tr");
     [varietyLabel(r.variety), monthLabel(r.month), customerName(r), formatKg(r.kg)].forEach((v, n) => {
       const td = document.createElement("td");
@@ -1376,6 +1551,7 @@ function displayReservations() {
       reservations[i].status = e.target.value;
       save("reservations", reservations);
       refreshAll();
+      if (e.target.value === "shipped") notifyShippedHidden();
     };
     statusTd.appendChild(sel);
     tr.appendChild(statusTd);
@@ -1662,6 +1838,7 @@ function commitShipment(s) {
   if (editingShipmentId === null) {
     s.id = uid("shipment");
     shipments.push(s);
+    revealListRow("shipments", withCustomerLookup(() => getVisibleShipments().findIndex(x => x.s === s)));
   } else {
     const i = shipments.findIndex(x => x.id === editingShipmentId);
     s.id = editingShipmentId;
@@ -1686,6 +1863,7 @@ function commitShipment(s) {
         target.status = "shipped";
         save("reservations", reservations);
         refreshAll();
+        notifyShippedHidden();
       });
     }
   }
@@ -1761,7 +1939,10 @@ function displayShipments() {
   displayVarietyMismatches();
   const b = document.getElementById("shipmentList");
   b.innerHTML = "";
-  getVisibleShipments().forEach(({ s, i }) => {
+  const visible = getVisibleShipments();
+  const shown = limitRows(visible, "shipments");
+  showListMore("shipments", shown.length, visible.length, "");
+  shown.forEach(({ s, i }) => {
     const tr = document.createElement("tr");
     [s.date, varietyLabel(s.variety), customerName(s), formatKg(s.kg), s.memo || ""].forEach((v, n) => {
       const td = document.createElement("td");
@@ -1808,9 +1989,34 @@ function unshippedCell(stats) {
   return `<span class="unshipped-value">${main}${note}</span>`;
 }
 
-function customerStats(c) {
-  const rs = reservations.filter(r => customerFor(r)?.customerId === c.customerId);
-  const ss = shipments.filter(s => customerFor(s)?.customerId === c.customerId);
+// 予約・出荷を、持ち主の顧客（customerFor と同じ決め方）ごとに1回で仕分ける。顧客の id → { rs, ss }
+// （customerStats を顧客ごとに呼ぶと、顧客の数だけ全部の予約・出荷を見直し、その1件ごとに全部の顧客から持ち主を探すため、
+//   件数が多いととても遅くなる。一覧を作るときは、これを1回作って使い回す）
+function groupItemsByCustomer() {
+  return withCustomerLookup(() => {
+    // 描き直しの間は、1回仕分けたものを使い回す（描き直しでは予約・出荷も変えない）
+    const lookup = currentCustomerLookup();
+    if (lookup.groups) return lookup.groups;
+    const groups = new Map();
+    lookup.groups = groups;
+    customers.forEach(c => groups.set(c.customerId, { rs: [], ss: [] }));
+    reservations.forEach(r => {
+      const c = customerFor(r);
+      if (c) groups.get(c.customerId).rs.push(r);
+    });
+    shipments.forEach(s => {
+      const c = customerFor(s);
+      if (c) groups.get(c.customerId).ss.push(s);
+    });
+    return groups;
+  });
+}
+
+// 顧客ごとの集計。groups（groupItemsByCustomer の結果）を渡すと、仕分け済みの予約・出荷を使う（渡さなければ、ここで探す）
+function customerStats(c, groups) {
+  const group = groups && groups.get(c.customerId);
+  const rs = group ? group.rs : reservations.filter(r => customerFor(r)?.customerId === c.customerId);
+  const ss = group ? group.ss : shipments.filter(s => customerFor(s)?.customerId === c.customerId);
   const byV = totals(rs);
   const shipV = totals(ss);
   const month = {};
@@ -1829,23 +2035,28 @@ function customerStats(c) {
 function getVisibleCustomers() {
   const q = document.getElementById("customerSearch").value.trim();
   const sort = document.getElementById("customerSort").value;
-  const arr = customers.map((c, i) => ({
-    c, s: customerStats(c), originalIndex: i
-  })).filter(({ c }) => [c.name, c.phone, c.address].join(" ").includes(q));
+  const groups = groupItemsByCustomer();
+  // 先に検索で絞ってから、残った顧客だけを集計する
+  const arr = customers.map((c, i) => ({ c, originalIndex: i }))
+    .filter(({ c }) => [c.name, c.phone, c.address].join(" ").includes(q))
+    .map(x => ({ ...x, s: customerStats(x.c, groups) }));
   arr.sort((a, b) => {
     if (sort === "recent") {
-      return a.originalIndex - b.originalIndex;
+      // 「新しい順（登録）」：あとから登録した顧客を上に
+      return b.originalIndex - a.originalIndex;
     }
     if (sort === "reservations") {
-      return b.s.reserved - a.s.reserved || String(a.c.furigana || a.c.name || "").localeCompare(String(b.c.furigana || b.c.name || ""), "ja");
+      return b.s.reserved - a.s.reserved || jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || ""));
     }
-    return String(a.c.furigana || a.c.name || "").localeCompare(String(b.c.furigana || b.c.name || ""), "ja") || String(a.c.name || "").localeCompare(String(b.c.name || ""), "ja");
+    return jaCompare(String(a.c.furigana || a.c.name || ""), String(b.c.furigana || b.c.name || "")) || jaCompare(String(a.c.name || ""), String(b.c.name || ""));
   });
   return arr;
 }
 
 function displayCustomers() {
-  const arr = getVisibleCustomers();
+  const visible = getVisibleCustomers();
+  const arr = limitRows(visible, "customers");
+  showListMore("customers", arr.length, visible.length, "");
   // 同じ名前の人を番号で見分けているときは、予約・出荷の顧客の欄と同じ番号を付ける（電話・住所は一覧の別の欄にあるので添えない）
   const names = customerDisplayNames();
   document.getElementById("customerList").innerHTML = arr.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="電話番号">${esc(c.phone)}</td><td data-label="住所">${esc(c.address)}</td><td data-label="メモ">${esc(c.memo)}</td><td data-label="予約合計">${formatKg(s.reserved)}</td><td data-label="出荷済み">${formatKg(s.shipped)}</td><td data-label="未出荷">${unshippedCell(s)}</td><td class="action-td"><button class="detail-button">詳細</button></td><td class="action-td"><button class="edit-button">編集</button></td><td class="action-td"><button class="delete-button">削除</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-message">${customers.length ? "条件に合う顧客がいません" : "まだ顧客が登録されていません"}</td></tr>`;
@@ -1864,7 +2075,8 @@ function displayCustomers() {
 function displayUnshippedCustomers() {
   const body = document.getElementById("unshippedCustomerList");
   if (!body) return;
-  const list = customers.map(c => ({ c, s: customerStats(c) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
+  const groups = groupItemsByCustomer();
+  const list = customers.map(c => ({ c, s: customerStats(c, groups) })).filter(({ s }) => s.unshipped > 0).sort((a, b) => b.s.unshipped - a.s.unshipped);
   // 同じ名前の人を番号で見分けているときは、顧客一覧と同じ番号を付ける
   const names = customerDisplayNames();
   body.innerHTML = list.map(({ c, s }) => `<tr><td data-label="顧客名">${esc(c.name + names.get(c.customerId).number)}</td><td data-label="未出荷">${formatKg(s.unshipped)}</td><td data-label="内訳">${esc(s.unshippedItems.map(i => `${i.label} ${formatKg(i.kg)}`).join("、"))}</td><td data-label="電話番号">${esc(c.phone)}</td><td class="action-td"><button class="detail-button">詳細</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty-message">未出荷の顧客はいません</td></tr>';
@@ -1945,7 +2157,7 @@ function unlinkedGroupElement(g) {
   amount.textContent = `未出荷 ${formatKg(g.unshipped.remaining)}（${g.unshipped.items.map(i => `${i.label} ${formatKg(i.kg)}`).join("、")}）`;
   head.append(title, amount);
   // 空白や全角・半角の違いだけで同じ名前になる顧客がすでにいれば、その人の可能性が高いので、新しく登録せず編集で選んでもらう
-  const similar = customers.filter(c => compareKey(c.name) === compareKey(g.name));
+  const similar = customersWithSameNameKey(g.name);
   let guide = "";
   if (g.missingCustomer) {
     guide = "登録されていた顧客が見つかりません（削除された可能性があります）。「編集」で顧客を選び直してください。予約を先に直すと、その予約に紐づいている出荷も一緒にその顧客に移ります（紐づけは残ります）。";
@@ -2098,6 +2310,7 @@ function commitCustomer(name, furigana, address) {
   } else {
     customers.push(c);
     nameLinked = nameLinkedTo(c);
+    revealListRow("customers", getVisibleCustomers().findIndex(x => x.c === c));
   }
   nameLinked.forEach(x => {
     x.customerId = c.customerId;
@@ -2176,7 +2389,7 @@ function mergeFormHtml(c) {
   const names = customerDisplayNames();
   // どちらも、顧客一覧と同じく、ふりがな（無ければ名前）の順に並べる
   const reading = x => String(x.furigana || x.name || "");
-  const byReading = (a, b) => reading(a).localeCompare(reading(b), "ja");
+  const byReading = (a, b) => jaCompare(reading(a), reading(b));
   const similar = others.filter(x => compareKey(x.name) === compareKey(c.name)).sort(byReading);
   const rest = others.filter(x => compareKey(x.name) !== compareKey(c.name)).sort(byReading);
   const options = [...similar, ...rest].map(x => `<option value="${esc(x.customerId)}">${esc(names.get(x.customerId).label)}</option>`).join("");
@@ -2296,6 +2509,11 @@ function switchView(id) {
 }
 
 function refreshAll() {
+  // 描き直しの間は、顧客を探すための表を使う（描き直しでは customers を変えない）
+  withCustomerLookup(refreshAllViews);
+}
+
+function refreshAllViews() {
   displayReservations();
   displayDashboard();
   displayInventory();
@@ -3181,7 +3399,8 @@ function exportReservationsCsv() {
     return;
   }
   downloadCsv(`reservations-${dateStamp()}.csv`, ["品種", "月", "名前", "kg", "受付経路", "状態"], rows);
-  notify(`予約${rows.length}件をCSVに書き出しました（表示中の絞り込み・並び順のとおり）`, "success");
+  const hiddenShipped = hiddenShippedCount();
+  notify(`予約${rows.length}件をCSVに書き出しました（表示中の絞り込み・並び順のとおり）${hiddenShipped ? `。出荷済みの予約${hiddenShipped}件は入っていません（入れるときは、「状態」で「すべて」を選んでから書き出してください）` : ""}`, hiddenShipped ? "info" : "success", hiddenShipped ? 10000 : undefined);
 }
 
 function exportShipmentsCsv() {
@@ -3208,10 +3427,28 @@ function printCurrentList() {
   window.print();
 }
 
+// 印刷するときは、一覧を区切らずに全部の行を出し、終わったら元に戻す
+function redrawLists() {
+  withCustomerLookup(() => Object.values(LIST_DISPLAYS).forEach(f => f()));
+}
+window.addEventListener("beforeprint", () => {
+  // 納品書・請求書の印刷では一覧は紙に出ないので、作り直さない
+  if (document.body.classList.contains("printing-doc")) return;
+  printingAllRows = true;
+  redrawLists();
+});
+window.addEventListener("afterprint", () => {
+  if (!printingAllRows) return;
+  printingAllRows = false;
+  redrawLists();
+});
+
 window.addEventListener("beforeprint", () => {
   const tab = document.querySelector(".view-tab.active");
   const el = document.getElementById("printTitle");
-  if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}｜${todayString().replace(/-/g, "/")}`;
+  // 予約一覧で出荷済みを隠しているときは、紙にもそのことを残す
+  const filterNote = tab && tab.dataset.view === "reservationsView" && document.getElementById("filterStatus").value === STATUS_FILTER_ACTIVE ? "（出荷済み以外）" : "";
+  if (el) el.textContent = `米予約管理｜${tab ? tab.textContent : ""}${filterNote}｜${todayString().replace(/-/g, "/")}`;
 });
 
 // ---------- バックアップ（書き出し・読み込み） ----------
@@ -3463,17 +3700,19 @@ document.getElementById("reservationSort").value = loadChoice(RESERVATION_SORT_K
 document.getElementById("shipmentSort").value = loadChoice(SHIPMENT_SORT_KEY, SHIPMENT_SORTS, "recent");
 document.getElementById("shipmentDate").value = todayString();
 document.getElementById("reservationSort").addEventListener("change", e => {
+  resetListLimit("reservations");
   save(RESERVATION_SORT_KEY, e.target.value);
   refreshAll();
 });
 document.getElementById("shipmentSort").addEventListener("change", e => {
+  resetListLimit("shipments");
   save(SHIPMENT_SORT_KEY, e.target.value);
   refreshAll();
 });
-["searchName", "filterVariety", "filterMonth", "filterChannel", "filterStatus", "customerSearch", "customerSort"].forEach(id => document.getElementById(id).addEventListener("input", refreshAll));
-document.getElementById("filterVariety").onchange = refreshAll;
-document.getElementById("filterMonth").onchange = refreshAll;
-document.getElementById("customerSort").onchange = displayCustomers;
+["searchName", "filterVariety", "filterMonth", "filterChannel", "filterStatus", "customerSearch", "customerSort"].forEach(id => document.getElementById(id).addEventListener("input", () => {
+  resetListLimit(id.startsWith("customer") ? "customers" : "reservations");
+  refreshAll();
+}));
 document.getElementById("customerSelect").onchange = e => {
   document.getElementById("name").value = customers.find(c => c.customerId === e.target.value)?.name || "";
 };
@@ -3522,7 +3761,7 @@ document.getElementById("loginForm").addEventListener("submit", submitLogin);
 const PAGE_ACTIONS = {
   addReservation, addShipment, cancelCustomerEdit, cancelEdit, cancelShipmentEdit,
   exportBackup, exportCustomersCsv, exportReservationsCsv, exportShipmentsCsv,
-  logout, printCurrentList, retryCloud, saveCustomer,
+  logout, printCurrentList, retryCloud, saveCustomer, showMoreRows,
   setStockMode: mode => setStockMode(mode),
   openImportFile: () => document.getElementById("importFile").click(),
   reloadPage: () => location.reload()

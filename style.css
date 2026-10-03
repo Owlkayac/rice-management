@@ -1039,6 +1039,7 @@ small {
 
 .toast {
   pointer-events: auto;
+  box-sizing: border-box;
   width: 100%;
   max-width: 560px;
   padding: 12px 16px;
@@ -1084,6 +1085,34 @@ small {
   cursor: pointer;
 }
 
+/* 自動ロック中は、データの画面そのものを隠す（画面でも印刷でも見えないように） */
+body.screen-locked .container,
+body.screen-locked .doc-print,
+body.screen-locked .toast-area {
+  display: none !important;
+}
+
+/* ボタン付きの知らせの、閉じるボタン（右上） */
+.toast-has-action {
+  position: relative;
+  padding-right: 52px;
+}
+
+.toast-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-height: 44px;
+  width: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.toast-close:hover,
 .toast-action:hover {
   background: rgba(255, 255, 255, 0.15);
 }

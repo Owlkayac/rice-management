@@ -16,7 +16,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
     <meta name="apple-mobile-web-app-title" content="米予約">
     <meta name="theme-color" content="#2f6b3b">
-    <link rel="stylesheet" href="style.css?v=36">
+    <link rel="stylesheet" href="style.css?v=38">
   </head>
   <body>
     <div class="container">
@@ -532,6 +532,7 @@
       <div class="cloud-loading-box">
         <p id="cloudLoadingText">Supabase からデータを読み込んでいます…</p>
         <button type="button" id="cloudReloadButton" data-action="reloadPage" hidden>もう一度読み込む</button>
+        <button type="button" id="lockRetryButton" data-action="retryLockCodeStage" hidden>もう一度試す</button>
       </div>
     </div>
     <!-- ログイン画面（ログインするまでは、ほかの画面を操作できない） -->
@@ -557,7 +558,7 @@
         <input type="text" id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="8" spellcheck="false">
         <p id="mfaCodeMessage" class="login-message" role="alert"></p>
         <button type="submit" id="mfaCodeButton">確認する</button>
-        <button type="button" class="cancel-button" data-action="logout">別のアカウントでログインする</button>
+        <button type="button" id="mfaCodeLogout" class="cancel-button" data-action="logout">別のアカウントでログインする</button>
       </form>
       <!-- 2段階認証：認証アプリを登録する（初めてのとき・登録を追加するとき） -->
       <form id="mfaEnrollForm" class="cloud-loading-box login-box" novalidate hidden>
@@ -587,6 +588,6 @@
     <script src="vendor/supabase-js-2.117.2.js"></script>
     <script src="supabase-config.js"></script>
     <script src="supabase-client.js?v=27"></script>
-    <script src="app.js?v=38"></script>
+    <script src="app.js?v=40"></script>
   </body>
 </html>
